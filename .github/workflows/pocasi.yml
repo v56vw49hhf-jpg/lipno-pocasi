@@ -1,0 +1,58 @@
+name: Lipno pocasi
+
+on:
+  workflow_dispatch:
+    inputs:
+      rezim:
+        description: "forecast = aktualni predpoved, verify = zpetne vyhodnoceni, both = oboje"
+        type: choice
+        default: forecast
+        options:
+          - forecast
+          - verify
+          - both
+      start:
+        description: "Zacatek zpetneho vyhodnoceni (RRRR-MM-DD)"
+        default: "2025-10-01"
+  # Pravidelne spousteni je zatim vypnute. Po odkomentovani pobezi 4x denne.
+  # schedule:
+  #   - cron: "20 3,9,15,21 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lipno-pocasi
+  cancel-in-progress: false
+
+jobs:
+  pocasi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Stahnout kod
+        uses: actions/checkout@v4
+      - name: Nastavit Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Nainstalovat zavislosti
+        run: pip install --quiet numpy pandas requests
+      - name: Spustit
+        env:
+          OPENMETEO_API_KEY: ${{ secrets.OPENMETEO_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REZIM: ${{ github.event.inputs.rezim || 'forecast' }}
+          START: ${{ github.event.inputs.start || '2025-10-01' }}
+        run: python pocasi.py "$REZIM" --start "$START"
+      - name: Ulozit vystupy do repozitare
+        if: always()
+        run: |
+          git config user.name "lipno-pocasi"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add out 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Vystupy $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+          fi
