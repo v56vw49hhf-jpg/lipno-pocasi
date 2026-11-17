@@ -1,0 +1,1067 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Lokální předpověď pro Lipno (Černá v Pošumaví, Frymburk).
+
+Dva režimy:
+  verify    zpětné vyhodnocení: jak se které modely trefovaly proti stanici
+            ČHMÚ Černá v Pošumaví a co přinese kalibrovaná směs
+  forecast  aktuální předpověď: kalibrace podle posledních 30 dní + směs modelů
+
+Zdroje dat:
+  předpovědi   Open-Meteo (api.open-meteo.com, previous-runs-api.open-meteo.com)
+  měření       ČHMÚ, opendata.chmi.cz (desetiminutová data)
+"""
+import argparse
+import datetime as dt
+import json
+import math
+import os
+import random
+import sys
+import time
+
+import numpy as np
+import pandas as pd
+import requests
+
+try:
+    from zoneinfo import ZoneInfo
+    TZ = ZoneInfo("Europe/Prague")
+except Exception:  # pragma: no cover
+    TZ = dt.timezone(dt.timedelta(hours=1))
+
+# --------------------------------------------------------------------------
+# Nastavení
+# --------------------------------------------------------------------------
+
+SITES = {
+    "cerna": {
+        "name": "Černá v Pošumaví – lanový park",
+        "lat": 48.7356, "lon": 14.1073, "elev": 740,
+        "chmi": "0-203-0-11547",      # stanice ČHMÚ Černá v Pošumaví
+        "calib": "cerna",
+    },
+    "frymburk": {
+        "name": "Frymburk – wake",
+        "lat": 48.660, "lon": 14.171, "elev": 735,
+        "chmi": None,                  # vlastní stanice zatím není napojená
+        "calib": "cerna",              # do té doby kalibrace podle Černé
+    },
+}
+
+# (název, [identifikátory Open-Meteo v pořadí priority], patří do směsi?)
+MODELS = [
+    ("ALADIN-CZ 1 km", ["chmi_aladin_cz_1km"], True),
+    ("ALADIN-CE 2,3 km", ["chmi_aladin_central_europe_2km"], True),
+    ("C-LAEF 1 km", ["geosphere_claef_austria"], True),
+    ("ICON-D2 2 km", ["dwd_icon_d2_native", "icon_d2"], True),
+    ("ICON-CH1 1 km", ["meteoswiss_icon_ch1"], True),
+    ("ICON-CH2 2 km", ["meteoswiss_icon_ch2"], True),
+    ("HARMONIE-DMI 2 km", ["dmi_harmonie_arome_europe"], True),
+    ("AROME-FR 1,3 km", ["meteofrance_arome_france_hd", "meteofrance_arome_france"], True),
+    ("HARMONIE-KNMI 5,5 km", ["knmi_harmonie_arome_europe"], True),
+    ("ICON-EU 7 km", ["dwd_icon_eu_native", "icon_eu"], True),
+    ("ECMWF IFS 9 km", ["ecmwf_ifs"], True),
+    ("ECMWF IFS 0,25°", ["ecmwf_ifs025"], False),
+    ("UKMO 10 km", ["ukmo_global_deterministic_10km"], True),
+    ("ARPEGE 11 km", ["meteofrance_arpege_europe"], True),
+    ("ICON 13 km", ["dwd_icon_global_native", "icon_global"], True),
+    ("GFS 13 km", ["ncep_gfs_global", "gfs_global"], True),
+    ("GEM 15 km", ["gem_global"], True),
+    ("ECMWF AIFS (AI)", ["ecmwf_aifs025_single"], True),
+    ("Open-Meteo best match", ["best_match"], False),
+]
+BLEND = [m[0] for m in MODELS if m[2]]
+
+# veličiny: zkratka -> (název v Open-Meteo, způsob korekce, jednotka, český název)
+VARS = {
+    "T": ("temperature_2m", "add", "°C", "Teplota"),
+    "W": ("wind_speed_10m", "mul", "m/s", "Vítr (průměr)"),
+    "G": ("wind_gusts_10m", "mul", "m/s", "Nárazy větru"),
+    "P": ("precipitation", None, "mm", "Srážky"),
+}
+LEADS = [0, 1, 2, 3, 5]          # o kolik dní dřív byla předpověď vydaná
+EVAL_LEADS = [1, 2, 3, 5]
+WINDOW = 30                      # dní pro klouzavou kalibraci
+MINP = 7
+
+OM_FORECAST = "https://api.open-meteo.com/v1/forecast"
+OM_PREVIOUS = "https://previous-runs-api.open-meteo.com/v1/forecast"
+CHMI = "https://opendata.chmi.cz/meteorology/climate"
+
+SESSION = requests.Session()
+SESSION.headers["User-Agent"] = "lipno-pocasi/0.1 (GitHub Actions; osobni projekt)"
+STATE = {"om_calls": 0, "om_cost": 0.0, "om_remaining": None, "errors": []}
+
+
+def log(*a):
+    print(*a, flush=True)
+
+
+# --------------------------------------------------------------------------
+# HTTP
+# --------------------------------------------------------------------------
+
+class ApiError(Exception):
+    pass
+
+
+def http_json(url, params=None, tries=6, timeout=90, allow404=False):
+    last = None
+    for attempt in range(tries):
+        try:
+            r = SESSION.get(url, params=params, timeout=timeout)
+        except requests.RequestException as e:
+            last = "síť: %s" % e
+            time.sleep(3 + 3 * attempt + random.random())
+            continue
+        if r.status_code == 200:
+            cost = r.headers.get("X-RateLimit-Cost")
+            rem = r.headers.get("X-RateLimit-Remaining")
+            if cost is not None:
+                try:
+                    STATE["om_cost"] += float(cost)
+                except ValueError:
+                    pass
+            if rem is not None:
+                STATE["om_remaining"] = rem
+            try:
+                return r.json()
+            except ValueError:
+                last = "odpověď není JSON"
+                time.sleep(2 + attempt)
+                continue
+        if r.status_code == 404 and allow404:
+            return None
+        if r.status_code == 429:
+            try:
+                wait = float(r.headers.get("Retry-After", "20"))
+            except ValueError:
+                wait = 20.0
+            try:
+                reason = r.json().get("reason", "")
+            except ValueError:
+                reason = r.text[:120]
+            last = "429 %s" % reason
+            if wait > 150:
+                # hodinový nebo denní limit: nemá smysl čekat v rámci běhu
+                raise ApiError("limit API vyčerpán (čekání %d s): %s" % (wait, reason))
+            log("    429, čekám %.0f s (%s)" % (wait, reason))
+            time.sleep(wait + 1 + 2 * random.random())
+            continue
+        if r.status_code in (500, 502, 503, 504):
+            last = "HTTP %d" % r.status_code
+            time.sleep(5 + 5 * attempt + random.random())
+            continue
+        try:
+            reason = r.json().get("reason", r.text[:200])
+        except ValueError:
+            reason = r.text[:200]
+        raise ApiError("HTTP %d: %s" % (r.status_code, reason))
+    raise ApiError("opakované selhání (%s)" % last)
+
+
+def om_base(url):
+    key = os.environ.get("OPENMETEO_API_KEY", "").strip()
+    if key:
+        return url.replace("https://", "https://customer-"), {"apikey": key}
+    return url, {}
+
+
+def om_fetch(url, site, model_id, hourly, **extra):
+    """Jeden model, jedno místo. Vrací DataFrame (index = čas UTC bez zóny)."""
+    base, auth = om_base(url)
+    params = {
+        "latitude": site["lat"], "longitude": site["lon"], "elevation": site["elev"],
+        "hourly": ",".join(hourly), "models": model_id,
+        "wind_speed_unit": "ms", "timezone": "GMT",
+    }
+    params.update(extra)
+    params.update(auth)
+    STATE["om_calls"] += 1
+    j = http_json(base, params)
+    if isinstance(j, list):
+        j = j[0]
+    h = j.get("hourly") or {}
+    if "time" not in h:
+        raise ApiError("odpověď bez časové osy")
+    idx = pd.to_datetime(h["time"])
+    data = {}
+    suffix = "_" + model_id
+    for k, v in h.items():
+        if k == "time":
+            continue
+        name = k[: -len(suffix)] if k.endswith(suffix) else k
+        data[name] = pd.to_numeric(pd.Series(v, dtype="object"), errors="coerce").to_numpy(dtype=float)
+    return pd.DataFrame(data, index=idx)
+
+
+def hourly_names(var_keys, leads):
+    out = []
+    for vk in var_keys:
+        base = VARS[vk][0]
+        for L in leads:
+            out.append(base if L == 0 else "%s_previous_day%d" % (base, L))
+    return out
+
+
+def chunks(start, end, days=60):
+    d = start
+    while d <= end:
+        e = min(end, d + dt.timedelta(days=days - 1))
+        yield d, e
+        d = e + dt.timedelta(days=1)
+
+
+def fetch_previous_runs(site, start, end, var_keys=("T", "W", "G", "P"), leads=LEADS):
+    """Vrací slovník fc[(veličina, předstih)] = DataFrame čas × model."""
+    names = hourly_names(var_keys, leads)
+    per_model = {}
+    for label, ids, _ in MODELS:
+        merged = None
+        label_errors = []
+        for mid in ids:
+            parts = []
+            failed = None
+            for a, b in chunks(start, end):
+                try:
+                    df = om_fetch(OM_PREVIOUS, site, mid, names,
+                                  start_date=a.isoformat(), end_date=b.isoformat())
+                    parts.append(df)
+                except ApiError as e:
+                    failed = str(e)
+                    break
+                time.sleep(0.4)
+            if failed and not parts:
+                log("  %-24s %-34s vynecháno: %s" % (label, mid, failed))
+                label_errors.append("%s (%s): %s" % (label, mid, failed))
+                if "limit API" in failed:
+                    break
+                continue
+            df = pd.concat(parts)
+            df = df[~df.index.duplicated(keep="last")].sort_index()
+            n_ok = int(df.notna().any(axis=1).sum())
+            log("  %-24s %-34s hodin s daty: %d%s" % (label, mid, n_ok, " (neúplné: %s)" % failed if failed else ""))
+            merged = df if merged is None else merged.combine_first(df)
+        if merged is not None and merged.notna().any().any():
+            per_model[label] = merged
+        else:
+            STATE["errors"].extend(label_errors or ["%s: bez dat" % label])
+    fc = {}
+    for vk in var_keys:
+        base = VARS[vk][0]
+        for L in leads:
+            col = base if L == 0 else "%s_previous_day%d" % (base, L)
+            cols = {m: d[col] for m, d in per_model.items() if col in d.columns and d[col].notna().any()}
+            fc[(vk, L)] = pd.DataFrame(cols).sort_index() if cols else pd.DataFrame()
+    return fc
+
+
+# --------------------------------------------------------------------------
+# Měření ČHMÚ
+# --------------------------------------------------------------------------
+
+WANT = ("T", "F", "Fmax", "D", "SRA10M")
+
+
+def _find_table(j):
+    """Najde v JSON slovník s klíči header + values."""
+    if isinstance(j, dict):
+        if "header" in j and "values" in j:
+            return j
+        for v in j.values():
+            t = _find_table(v)
+            if t is not None:
+                return t
+    elif isinstance(j, list):
+        for v in j[:3]:
+            if isinstance(v, (dict, list)):
+                t = _find_table(v)
+                if t is not None:
+                    return t
+    return None
+
+
+def chmi_parse(j):
+    t = _find_table(j)
+    if t is None:
+        return None
+    hdr = [h.strip() for h in t["header"].split(",")]
+    iE, iT, iV = hdr.index("ELEMENT"), hdr.index("DT"), hdr.index("VAL")
+    rows = [(r[iT], r[iE], r[iV]) for r in t["values"] if r[iE] in WANT]
+    if not rows:
+        return None
+    df = pd.DataFrame(rows, columns=["t", "e", "v"])
+    df["v"] = pd.to_numeric(df["v"], errors="coerce")
+    df["t"] = pd.to_datetime(df["t"], utc=True).dt.tz_localize(None)
+    return df.pivot_table(index="t", columns="e", values="v", aggfunc="last")
+
+
+def chmi_get(path):
+    try:
+        j = http_json(CHMI + path, tries=3, timeout=120, allow404=True)
+    except ApiError as e:
+        log("  ČHMÚ %s: %s" % (path, e))
+        return None
+    if j is None:
+        return None
+    try:
+        return chmi_parse(j)
+    except Exception as e:  # neočekávaný formát
+        log("  ČHMÚ %s: nečitelný formát (%s)" % (path, e))
+        return None
+
+
+def fetch_chmi_10min(wsi, start, end):
+    """Desetiminutová data stanice za období [start, end] (data UTC)."""
+    today = dt.datetime.now(dt.timezone.utc).date()
+    frames = []
+    y, m = start.year, start.month
+    while (y, m) <= (end.year, end.month):
+        ym = "%04d%02d" % (y, m)
+        df = None
+        for path in ("/historical/data/10min/%04d/10m-%s-%s.json" % (y, wsi, ym),
+                     "/recent/data/10min/%02d/10m-%s-%s.json" % (m, wsi, ym)):
+            df = chmi_get(path)
+            if df is not None:
+                log("  ČHMÚ %s: %d záznamů (%s)" % (ym, len(df), path.split("/")[1]))
+                break
+        if df is None:
+            # měsíc ještě není uzavřený: denní soubory
+            got = 0
+            d = dt.date(y, m, 1)
+            while d.month == m and d <= min(end, today):
+                if d >= start:
+                    ymd = d.strftime("%Y%m%d")
+                    dd = chmi_get("/recent/data/10min/10m-%s-%s.json" % (wsi, ymd))
+                    if dd is None:
+                        dd = chmi_get("/now/data/10m-%s-%s.json" % (wsi, ymd))
+                    if dd is not None:
+                        frames.append(dd)
+                        got += 1
+                d += dt.timedelta(days=1)
+            log("  ČHMÚ %s: denní soubory, načteno dní: %d" % (ym, got))
+        else:
+            frames.append(df)
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    if not frames:
+        return pd.DataFrame()
+    out = pd.concat(frames)
+    out = out[~out.index.duplicated(keep="last")].sort_index()
+    return out
+
+
+def obs_hourly(df10):
+    """Hodinové hodnoty srovnatelné s modely (čas = konec hodiny, UTC)."""
+    if df10.empty:
+        return pd.DataFrame()
+    df10 = df10.sort_index()
+    idx = pd.date_range(df10.index.min().ceil("h"), df10.index.max().floor("h"), freq="h")
+    out = pd.DataFrame(index=idx)
+    if "T" in df10:
+        t = df10["T"]
+        out["T"] = t.reindex(idx)
+        # chybějící celá hodina: vezmi hodnotu o 10 minut dřív
+        prev = t.reindex(idx - pd.Timedelta(minutes=10))
+        prev.index = idx
+        out["T"] = out["T"].fillna(prev)
+    g = df10.resample("h", label="right", closed="right")
+    if "F" in df10:
+        out["W"] = g["F"].mean().where(g["F"].count() >= 4).reindex(idx)
+    if "Fmax" in df10:
+        out["G"] = g["Fmax"].max().where(g["Fmax"].count() >= 4).reindex(idx)
+    if "SRA10M" in df10:
+        out["P"] = g["SRA10M"].sum().where(g["SRA10M"].count() >= 5).reindex(idx)
+    return out
+
+
+# --------------------------------------------------------------------------
+# Statistika
+# --------------------------------------------------------------------------
+
+def basic_stats(f, o):
+    d = (f - o).dropna()
+    n = int(len(d))
+    if n == 0:
+        return {"n": 0, "bias": np.nan, "mae": np.nan, "rmse": np.nan}
+    return {"n": n, "bias": float(d.mean()), "mae": float(d.abs().mean()),
+            "rmse": float(math.sqrt((d ** 2).mean()))}
+
+
+def _roll(a, w):
+    out = a.copy()
+    out[w:] = a[w:] - a[:-w]
+    return out
+
+
+def rolling_blend(E, O, lead, kind, window=WINDOW, minp=MINP):
+    """
+    Klouzavá kalibrace jen z minulosti.
+    E: čas × model (předpovědi vydané o `lead` dní dřív), O: měření.
+    Vrací (opravené předpovědi, směs).
+    """
+    idx = E.index
+    Ov = O.reindex(idx).to_numpy(dtype=float)
+    Ev = E.to_numpy(dtype=float)
+    day0 = idx.min().normalize()
+    dpos = ((idx.normalize() - day0) / pd.Timedelta(days=1)).astype(int).to_numpy()
+    hod = idx.hour.to_numpy()
+    nd = int(dpos.max()) + 1
+    nm = Ev.shape[1]
+    shift = lead + 1
+    Fc = np.full_like(Ev, np.nan)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        for j in range(nm):
+            e = Ev[:, j]
+            ok = ~np.isnan(e) & ~np.isnan(Ov)
+            if kind == "add":
+                S = np.zeros((nd, 24))
+                C = np.zeros((nd, 24))
+                np.add.at(S, (dpos[ok], hod[ok]), (e - Ov)[ok])
+                np.add.at(C, (dpos[ok], hod[ok]), 1.0)
+                rs = _roll(np.cumsum(S, axis=0), window)
+                rc = _roll(np.cumsum(C, axis=0), window)
+                bias = np.where(rc >= minp, rs / np.maximum(rc, 1.0), np.nan)
+                bsh = np.full_like(bias, np.nan)
+                if nd > shift:
+                    bsh[shift:] = bias[:-shift]
+                Fc[:, j] = e - bsh[dpos, hod]
+            else:
+                SF = np.zeros(nd)
+                SO = np.zeros(nd)
+                C = np.zeros(nd)
+                np.add.at(SF, dpos[ok], e[ok])
+                np.add.at(SO, dpos[ok], Ov[ok])
+                np.add.at(C, dpos[ok], 1.0)
+                rf = _roll(np.cumsum(SF), window)
+                ro = _roll(np.cumsum(SO), window)
+                rc = _roll(np.cumsum(C), window)
+                ratio = np.where((rc >= minp * 12) & (rf > 1e-6), ro / np.maximum(rf, 1e-6), np.nan)
+                ratio = np.clip(ratio, 0.4, 2.5)
+                rsh = np.full(nd, np.nan)
+                if nd > shift:
+                    rsh[shift:] = ratio[:-shift]
+                Fc[:, j] = e * rsh[dpos]
+        err2 = (Fc - Ov[:, None]) ** 2
+        S2 = np.zeros((nd, nm))
+        C2 = np.zeros((nd, nm))
+        for j in range(nm):
+            ok = ~np.isnan(err2[:, j])
+            np.add.at(S2[:, j], dpos[ok], err2[ok, j])
+            np.add.at(C2[:, j], dpos[ok], 1.0)
+        rs2 = _roll(np.cumsum(S2, axis=0), window)
+        rc2 = _roll(np.cumsum(C2, axis=0), window)
+        mse = np.where(rc2 >= minp * 12, rs2 / np.maximum(rc2, 1.0), np.nan)
+        msh = np.full_like(mse, np.nan)
+        if nd > shift:
+            msh[shift:] = mse[:-shift]
+        wt = 1.0 / np.maximum(msh, 0.05)
+        Wt = wt[dpos, :]
+        valid = ~np.isnan(Fc) & ~np.isnan(Wt)
+        num = np.where(valid, Fc * Wt, 0.0).sum(axis=1)
+        den = np.where(valid, Wt, 0.0).sum(axis=1)
+        cnt = valid.sum(axis=1)
+        blend = np.where(cnt >= 2, num / np.maximum(den, 1e-12), np.nan)
+    return (pd.DataFrame(Fc, index=idx, columns=E.columns),
+            pd.Series(blend, index=idx))
+
+
+def current_calibration(E, O, kind, window=WINDOW, minp=MINP):
+    """
+    Kalibrace z posledních `window` dní pro provozní předpověď.
+    Vrací slovník model -> {"bias": [24] | "ratio": x, "mse": y, "n": n} a RMSE směsi.
+    """
+    out = {}
+    if E.empty:
+        return out, np.nan
+    idx = E.index
+    last = idx.max()
+    sel = idx > (last - pd.Timedelta(days=window))
+    E = E[sel]
+    O = O.reindex(E.index)
+    hod = E.index.hour.to_numpy()
+    Ov = O.to_numpy(dtype=float)
+    corrected = {}
+    for m in E.columns:
+        e = E[m].to_numpy(dtype=float)
+        ok = ~np.isnan(e) & ~np.isnan(Ov)
+        if ok.sum() < minp * 12:
+            continue
+        if kind == "add":
+            bias = np.zeros(24)
+            for h in range(24):
+                s = ok & (hod == h)
+                bias[h] = float((e[s] - Ov[s]).mean()) if s.sum() >= 4 else float((e[ok] - Ov[ok]).mean())
+            c = e - bias[hod]
+            entry = {"bias": [round(float(b), 3) for b in bias]}
+        else:
+            sf = float(e[ok].sum())
+            ratio = float(np.clip(Ov[ok].sum() / sf, 0.4, 2.5)) if sf > 1e-6 else 1.0
+            c = e * ratio
+            entry = {"ratio": round(ratio, 3)}
+        mse = float(((c - Ov)[ok] ** 2).mean())
+        entry["mse"] = round(mse, 4)
+        entry["n"] = int(ok.sum())
+        out[m] = entry
+        corrected[m] = pd.Series(c, index=E.index)
+    rmse = np.nan
+    use = [m for m in corrected if m in BLEND]
+    if len(use) >= 2:
+        C = pd.DataFrame({m: corrected[m] for m in use})
+        w = pd.Series({m: 1.0 / max(out[m]["mse"], 0.05) for m in use})
+        W = pd.DataFrame(np.tile(w.to_numpy(), (len(C), 1)), index=C.index, columns=C.columns).where(C.notna())
+        b = (C * W).sum(axis=1) / W.sum(axis=1)
+        d = (b - O).dropna()
+        if len(d):
+            rmse = float(math.sqrt((d ** 2).mean()))
+    return out, rmse
+
+
+# --------------------------------------------------------------------------
+# Formátování
+# --------------------------------------------------------------------------
+
+def cz(x, nd=1):
+    if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
+        return "–"
+    s = "%.*f" % (nd, x)
+    if float(s) == 0:
+        s = s.replace("-", "")
+    return s.replace(".", ",").replace("-", "−")
+
+
+def md_table(header, rows):
+    lines = ["| " + " | ".join(header) + " |", "|" + "|".join(["---"] * len(header)) + "|"]
+    for r in rows:
+        lines.append("| " + " | ".join(str(c) for c in r) + " |")
+    return "\n".join(lines)
+
+
+def season_mask(idx, name):
+    m = idx.month
+    if name == "léto (V–IX)":
+        return (m >= 5) & (m <= 9)
+    if name == "zima (XI–III)":
+        return (m >= 11) | (m <= 3)
+    return np.ones(len(idx), dtype=bool)
+
+
+# --------------------------------------------------------------------------
+# Režim: zpětné vyhodnocení
+# --------------------------------------------------------------------------
+
+def run_verify(start, outdir):
+    site = SITES["cerna"]
+    today = dt.datetime.now(dt.timezone.utc).date()
+    end = today - dt.timedelta(days=1)
+    log("== Zpětné vyhodnocení %s až %s, stanice ČHMÚ %s" % (start, end, site["chmi"]))
+
+    log("-- měření ČHMÚ")
+    df10 = fetch_chmi_10min(site["chmi"], start, end)
+    obs = obs_hourly(df10)
+    if obs.empty:
+        raise SystemExit("Nepodařilo se načíst měření ČHMÚ.")
+    log("  hodinových záznamů: %d (%s až %s)" % (len(obs), obs.index.min(), obs.index.max()))
+    log("  platných hodnot: " + ", ".join("%s %d" % (k, int(obs[k].notna().sum())) for k in obs.columns))
+
+    log("-- archiv předpovědí Open-Meteo")
+    fc = fetch_previous_runs(site, start, end)
+    log("  dotazů: %d, váha: %.0f, zbývá v limitu: %s" % (STATE["om_calls"], STATE["om_cost"], STATE["om_remaining"]))
+    if all(v.empty for v in fc.values()):
+        raise SystemExit("Nepodařilo se načíst žádné předpovědi: " + "; ".join(STATE["errors"][:5]))
+
+    md = []
+    skill = {"period": [str(start), str(end)], "station": site["chmi"], "models": {}, "blend": {}}
+    md.append("# Jak se modely trefují v Černé v Pošumaví")
+    md.append("")
+    md.append("Období: %s až %s. Měřítko: stanice ČHMÚ Černá v Pošumaví (740 m), desetiminutová data převedená na hodinová. "
+              "Předpovědi: archiv Open-Meteo, vždy to, co model říkal 1, 2, 3 a 5 dní předem. Časy v UTC."
+              % (start.strftime("%-d. %-m. %Y"), end.strftime("%-d. %-m. %Y")))
+    md.append("")
+    md.append("Chyba = průměrná absolutní odchylka předpovědi od měření (menší je lepší). "
+              "Odchylka = průměr (předpověď − měření); kladná znamená, že model nadsazuje.")
+    md.append("")
+
+    summary_rows = []
+    for vk in ("T", "W", "G"):
+        base, kind, unit, title = VARS[vk]
+        o = obs[vk] if vk in obs else pd.Series(dtype=float)
+        if o.notna().sum() < 200:
+            md.append("## %s\n\nMěření nejsou k dispozici.\n" % title)
+            continue
+        md.append("## %s (%s)" % (title, unit))
+        md.append("")
+        # tabulka po modelech
+        per = {}
+        for L in EVAL_LEADS:
+            E = fc.get((vk, L), pd.DataFrame())
+            for m in E.columns:
+                per.setdefault(m, {})[L] = basic_stats(E[m], o.reindex(E.index))
+        order = sorted(per, key=lambda m: (per[m].get(1, {}).get("mae", np.nan)
+                                           if not np.isnan(per[m].get(1, {}).get("mae", np.nan)) else 99))
+        rows = []
+        for m in order:
+            r = [m]
+            for L in EVAL_LEADS:
+                s = per[m].get(L)
+                r.append(cz(s["mae"], 2) if s and s["n"] >= 200 else "–")
+            s1 = per[m].get(1)
+            r.append(cz(s1["bias"], 2) if s1 and s1["n"] >= 200 else "–")
+            r.append(str(s1["n"]) if s1 else "0")
+            rows.append(r)
+            skill["models"].setdefault(m, {})[vk] = {str(L): per[m].get(L) for L in EVAL_LEADS}
+        md.append(md_table(["Model", "Chyba +1 den", "+2 dny", "+3 dny", "+5 dní", "Odchylka +1 den", "Hodin (+1 den)"], rows))
+        md.append("")
+
+        # směs
+        md.append("**Kalibrovaná směs proti jednotlivým modelům** (jen období, kdy už je z čeho kalibrovat; "
+                  "směs smí použít jen data starší než den vydání předpovědi):")
+        md.append("")
+        rows = []
+        for L in EVAL_LEADS:
+            E = fc.get((vk, L), pd.DataFrame())
+            cols = [m for m in E.columns if m in BLEND]
+            if len(cols) < 2:
+                continue
+            Eb = E[cols]
+            oo = o.reindex(Eb.index)
+            Fc, blend = rolling_blend(Eb, oo, L, kind)
+            okb = blend.notna() & oo.notna()
+            nb = int(okb.sum())
+            if nb < 300:
+                continue
+            sb = basic_stats(blend[okb], oo[okb])
+            raw_mean = Eb.mean(axis=1).where(Eb.notna().sum(axis=1) >= 2)
+            sm = basic_stats(raw_mean[okb], oo[okb])
+            best_name, best = None, None
+            for m in cols:
+                s = basic_stats(Eb[m][okb], oo[okb])
+                if s["n"] >= 0.6 * nb and (best is None or s["mae"] < best["mae"]):
+                    best_name, best = m, s
+            bm = E["Open-Meteo best match"] if "Open-Meteo best match" in E.columns else None
+            sbm = basic_stats(bm[okb], oo[okb]) if bm is not None else {"mae": np.nan}
+            gain = (1 - sb["mae"] / best["mae"]) * 100 if best and best["mae"] > 0 else np.nan
+            rows.append(["+%d d" % L, cz(sb["mae"], 2),
+                         "%s (%s)" % (cz(best["mae"], 2), best_name) if best else "–",
+                         cz(sm["mae"], 2), cz(sbm["mae"], 2),
+                         (cz(gain, 0) + " %") if not np.isnan(gain) else "–", str(nb)])
+            skill["blend"].setdefault(vk, {})[str(L)] = {
+                "mae": sb["mae"], "rmse": sb["rmse"], "bias": sb["bias"], "n": nb,
+                "best_single": best_name, "best_single_mae": best["mae"] if best else None,
+                "raw_mean_mae": sm["mae"], "best_match_mae": sbm["mae"]}
+            summary_rows.append([title, "+%d d" % L, cz(best["mae"], 2) if best else "–", cz(sb["mae"], 2),
+                                 (cz(gain, 0) + " %") if not np.isnan(gain) else "–"])
+            # sezóny
+            for sname in ("léto (V–IX)", "zima (XI–III)"):
+                sel = okb & season_mask(blend.index, sname)
+                if int(sel.sum()) >= 300 and L in (1, 3):
+                    s1 = basic_stats(blend[sel], oo[sel])
+                    bbest, bname = None, None
+                    for m in cols:
+                        s = basic_stats(Eb[m][sel], oo[sel])
+                        if s["n"] >= 0.6 * int(sel.sum()) and (bbest is None or s["mae"] < bbest["mae"]):
+                            bname, bbest = m, s
+                    skill["blend"][vk][str(L)][sname] = {
+                        "mae": s1["mae"], "best_single": bname,
+                        "best_single_mae": bbest["mae"] if bbest else None, "n": int(sel.sum())}
+        if rows:
+            md.append(md_table(["Předstih", "Směs", "Nejlepší jednotlivý model", "Prostý průměr modelů",
+                                "Open-Meteo best match", "Zlepšení proti nejlepšímu", "Hodin"], rows))
+        else:
+            md.append("Na směs zatím není dost dat.")
+        md.append("")
+        seas = []
+        for L in (1, 3):
+            b = skill["blend"].get(vk, {}).get(str(L), {})
+            for sname in ("léto (V–IX)", "zima (XI–III)"):
+                if sname in b:
+                    x = b[sname]
+                    seas.append([sname, "+%d d" % L, cz(x["mae"], 2),
+                                 "%s (%s)" % (cz(x["best_single_mae"], 2), x["best_single"]) if x["best_single"] else "–",
+                                 str(x["n"])])
+        if seas:
+            md.append("Podle sezóny:")
+            md.append("")
+            md.append(md_table(["Sezóna", "Předstih", "Směs", "Nejlepší jednotlivý model", "Hodin"], seas))
+            md.append("")
+
+        if vk == "T":
+            E = fc.get(("T", 1), pd.DataFrame())
+            top = [m for m in order if m in E.columns][:8]
+            if top:
+                hrs = [0, 3, 6, 9, 12, 15, 18, 21]
+                rows = []
+                for m in top:
+                    d = (E[m] - o.reindex(E.index)).dropna()
+                    g = d.groupby(d.index.hour).mean()
+                    rows.append([m] + [cz(float(g.get(h, np.nan)), 1) for h in hrs])
+                md.append("Odchylka teploty podle denní doby (předstih 1 den, hodiny v UTC; SEČ = UTC + 1):")
+                md.append("")
+                md.append(md_table(["Model"] + ["%02d h" % h for h in hrs], rows))
+                md.append("")
+
+    # srážky: denní úhrny
+    if "P" in obs and obs["P"].notna().sum() >= 200:
+        md.append("## Srážky (denní úhrny, mm)")
+        md.append("")
+        o = obs["P"]
+        od = o.groupby(o.index.normalize()).sum().where(o.groupby(o.index.normalize()).count() >= 22)
+        rows = []
+        pstats = {}
+        for L in (1, 3):
+            E = fc.get(("P", L), pd.DataFrame())
+            if E.empty:
+                continue
+            for m in list(E.columns) + ["Medián modelů"]:
+                if m == "Medián modelů":
+                    cols = [c for c in E.columns if c in BLEND]
+                    f = E[cols].median(axis=1).where(E[cols].notna().sum(axis=1) >= 3)
+                else:
+                    f = E[m]
+                fd = f.groupby(f.index.normalize()).sum().where(f.groupby(f.index.normalize()).count() >= 22)
+                both = pd.concat([fd, od], axis=1, keys=["f", "o"]).dropna()
+                if len(both) < 60:
+                    continue
+                a = int(((both.f >= 1) & (both.o >= 1)).sum())
+                b = int(((both.f >= 1) & (both.o < 1)).sum())
+                c = int(((both.f < 1) & (both.o >= 1)).sum())
+                pstats.setdefault(m, {})[L] = {
+                    "n": len(both), "mae": float((both.f - both.o).abs().mean()),
+                    "bias": float((both.f - both.o).mean()),
+                    "pod": a / (a + c) if a + c else np.nan,
+                    "far": b / (a + b) if a + b else np.nan}
+        order = sorted(pstats, key=lambda m: pstats[m].get(1, {}).get("mae", 99))
+        for m in order:
+            s1, s3 = pstats[m].get(1), pstats[m].get(3)
+            rows.append([m,
+                         cz(s1["mae"], 2) if s1 else "–", cz(s1["bias"], 2) if s1 else "–",
+                         (cz(s1["pod"] * 100, 0) + " %") if s1 and not np.isnan(s1["pod"]) else "–",
+                         (cz(s1["far"] * 100, 0) + " %") if s1 and not np.isnan(s1["far"]) else "–",
+                         cz(s3["mae"], 2) if s3 else "–",
+                         str(s1["n"]) if s1 else "0"])
+            skill["models"].setdefault(m, {})["P"] = {str(k): v for k, v in pstats[m].items()}
+        md.append("Zachycené deště = podíl dní s naměřeným úhrnem aspoň 1 mm, které model předpověděl. "
+                  "Plané poplachy = podíl dní, kdy model dal aspoň 1 mm a nenapršelo.")
+        md.append("")
+        md.append(md_table(["Model", "Chyba +1 den", "Odchylka +1 den", "Zachycené deště", "Plané poplachy",
+                            "Chyba +3 dny", "Dní"], rows))
+        md.append("")
+
+    if summary_rows:
+        md.insert(5, "## Shrnutí\n\n" + md_table(
+            ["Veličina", "Předstih", "Nejlepší jednotlivý model", "Kalibrovaná směs", "Zlepšení"], summary_rows) + "\n")
+    if STATE["errors"]:
+        md.append("## Co se nepodařilo načíst")
+        md.append("")
+        for e in STATE["errors"]:
+            md.append("- " + e)
+        md.append("")
+    md.append("Zdroje: předpovědi Open-Meteo.com (CC BY 4.0), měření ČHMÚ (opendata.chmi.cz).")
+    text = "\n".join(md) + "\n"
+    os.makedirs(outdir, exist_ok=True)
+    with open(os.path.join(outdir, "verifikace.md"), "w", encoding="utf-8") as f:
+        f.write(text)
+    with open(os.path.join(outdir, "skill.json"), "w", encoding="utf-8") as f:
+        json.dump(skill, f, ensure_ascii=False, indent=1, default=lambda x: None if isinstance(x, float) and math.isnan(x) else x)
+    summ = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summ:
+        with open(summ, "a", encoding="utf-8") as f:
+            f.write(text)
+    log("\n" + text)
+
+
+# --------------------------------------------------------------------------
+# Režim: aktuální předpověď
+# --------------------------------------------------------------------------
+
+DIRS = ["S", "SV", "V", "JV", "J", "JZ", "Z", "SZ"]
+DAYS = ["po", "út", "st", "čt", "pá", "so", "ne"]
+
+
+def lead_bucket(hours_ahead):
+    if hours_ahead <= 30:
+        return 1
+    if hours_ahead <= 54:
+        return 2
+    if hours_ahead <= 90:
+        return 3
+    return 5
+
+
+def fetch_current(site):
+    names = ["temperature_2m", "wind_speed_10m", "wind_gusts_10m", "wind_direction_10m",
+             "precipitation", "cloud_cover", "cape"]
+    per = {}
+    for label, ids, _ in MODELS:
+        merged = None
+        label_errors = []
+        for mid in ids:
+            try:
+                df = om_fetch(OM_FORECAST, site, mid, names, forecast_days=8, past_days=1)
+            except ApiError as e:
+                label_errors.append("%s (%s): %s" % (label, mid, e))
+                if "limit API" in str(e):
+                    break
+                continue
+            merged = df if merged is None else merged.combine_first(df)
+            time.sleep(0.3)
+        if merged is not None and merged.notna().any().any():
+            per[label] = merged
+        else:
+            STATE["errors"].extend(label_errors or ["%s: bez dat" % label])
+    return per
+
+
+def apply_calibration(per, calib, now):
+    """Vrací slovník veličina -> DataFrame čas × model (opravené hodnoty) a váhy."""
+    out = {}
+    for vk in ("T", "W", "G"):
+        base, kind, _, _ = VARS[vk]
+        cols = {}
+        wts = {}
+        for m, df in per.items():
+            if base not in df.columns or m not in BLEND:
+                continue
+            s = df[base].copy()
+            s = s[s.index >= now.floor("h")]
+            if s.notna().sum() == 0:
+                continue
+            c = pd.Series(np.nan, index=s.index)
+            w = pd.Series(np.nan, index=s.index)
+            hrs = ((s.index - now) / pd.Timedelta(hours=1)).to_numpy()
+            for L in (1, 2, 3, 5):
+                sel = np.array([lead_bucket(h) == L for h in hrs])
+                if not sel.any():
+                    continue
+                entry = None
+                for LL in (L, 3, 2, 1):
+                    if LL <= L:
+                        entry = calib.get((vk, LL), {}).get(m)
+                        if entry:
+                            break
+                vals = s.to_numpy(dtype=float)[sel]
+                if entry is None:
+                    # model bez historie: bez opravy, poloviční váha proti mediánu
+                    others = [e["mse"] for e in calib.get((vk, min(L, 3)), {}).values()]
+                    mse = (float(np.median(others)) * 2.0) if others else 4.0
+                    cv = vals
+                elif kind == "add":
+                    b = np.array(entry["bias"])[s.index.hour.to_numpy()[sel]]
+                    cv = vals - b
+                    mse = entry["mse"]
+                else:
+                    cv = vals * entry["ratio"]
+                    mse = entry["mse"]
+                c.iloc[np.where(sel)[0]] = cv
+                w.iloc[np.where(sel)[0]] = 1.0 / max(mse, 0.05)
+            cols[m] = c
+            wts[m] = w
+        C = pd.DataFrame(cols)
+        W = pd.DataFrame(wts).where(C.notna())
+        out[vk] = (C, W)
+    return out
+
+
+def wmean_std(C, W):
+    num = (C * W).sum(axis=1, min_count=1)
+    den = W.sum(axis=1, min_count=1)
+    mean = num / den
+    var = ((C.sub(mean, axis=0)) ** 2 * W).sum(axis=1, min_count=1) / den
+    return mean, np.sqrt(var), C.notna().sum(axis=1)
+
+
+def agreement(spread, scale):
+    if np.isnan(spread):
+        return "–"
+    if spread <= scale:
+        return "vysoká"
+    if spread <= 2 * scale:
+        return "střední"
+    return "nízká"
+
+
+def run_forecast(outdir):
+    now = pd.Timestamp(dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))
+    today = now.date()
+    start = today - dt.timedelta(days=WINDOW + 20)
+    cal_site = SITES["cerna"]
+    log("== Předpověď, vydáno %s UTC" % now.strftime("%Y-%m-%d %H:%M"))
+
+    log("-- měření ČHMÚ za kalibrační okno")
+    obs = obs_hourly(fetch_chmi_10min(cal_site["chmi"], start, today))
+    log("-- poslední předpovědi modelů za kalibrační okno")
+    fc = fetch_previous_runs(cal_site, start, today, var_keys=("T", "W", "G"), leads=[1, 2, 3, 5])
+    calib = {}
+    blend_rmse = {}
+    for vk in ("T", "W", "G"):
+        kind = VARS[vk][1]
+        for L in (1, 2, 3, 5):
+            E = fc.get((vk, L), pd.DataFrame())
+            if E.empty or vk not in obs:
+                continue
+            c, rmse = current_calibration(E, obs[vk], kind)
+            calib[(vk, L)] = c
+            blend_rmse[(vk, L)] = rmse
+    ncal = len(calib.get(("T", 1), {}))
+    log("  modelů s kalibrací (teplota, +1 den): %d" % ncal)
+
+    result = {"issued_utc": now.strftime("%Y-%m-%dT%H:%MZ"), "sites": {}, "errors": []}
+    md = []
+    issued_local = dt.datetime.now(TZ)
+    md.append("# Předpověď pro Lipno – kalibrovaná směs modelů")
+    md.append("")
+    md.append("Vydáno %s %s. Kalibrace podle stanice ČHMÚ Černá v Pošumaví za posledních %d dní."
+              % (DAYS[issued_local.weekday()], issued_local.strftime("%-d. %-m. %Y %H:%M"), WINDOW))
+    md.append("")
+
+    for key, site in SITES.items():
+        log("-- aktuální modely: %s" % site["name"])
+        per = fetch_current(site)
+        if len(per) < 2:
+            md.append("## %s\n\nNepodařilo se načíst dost modelů.\n" % site["name"])
+            continue
+        cal = apply_calibration(per, calib, now)
+        Tm, Ts, Tn = wmean_std(*cal["T"])
+        Wm, Ws, _ = wmean_std(*cal["W"])
+        Gm, Gs, _ = wmean_std(*cal["G"])
+        blend_models = [m for m in per if m in BLEND]
+        P = pd.DataFrame({m: per[m]["precipitation"] for m in blend_models if "precipitation" in per[m]})
+        P = P[P.index >= now.floor("h")]
+        Dx = pd.DataFrame({m: np.sin(np.deg2rad(per[m]["wind_direction_10m"])) for m in blend_models if "wind_direction_10m" in per[m]})
+        Dy = pd.DataFrame({m: np.cos(np.deg2rad(per[m]["wind_direction_10m"])) for m in blend_models if "wind_direction_10m" in per[m]})
+        wdir = (np.rad2deg(np.arctan2(Dx.mean(axis=1), Dy.mean(axis=1))) + 360) % 360
+        cape = pd.DataFrame({m: per[m]["cape"] for m in blend_models if "cape" in per[m]}).max(axis=1)
+
+        idx = Tm.index
+        local = idx.tz_localize("UTC").tz_convert(TZ)
+        # bloky po 3 hodinách na 48 h
+        rows = []
+        hourly_json = []
+        t0 = now.ceil("h")
+        for k in range(0, 48, 3):
+            a = t0 + pd.Timedelta(hours=k)
+            b = a + pd.Timedelta(hours=3)
+            sel = (idx > a) & (idx <= b)
+            if not sel.any():
+                continue
+            la = (a.tz_localize("UTC").tz_convert(TZ))
+            lb = (b.tz_localize("UTC").tz_convert(TZ))
+            t = float(Tm[sel].mean())
+            ts = float(Ts[sel].mean())
+            L = lead_bucket(k + 1.5)
+            unc = blend_rmse.get(("T", min(L, 3)), np.nan)
+            half = 1.28 * math.sqrt((ts if not np.isnan(ts) else 0) ** 2 + (unc if not np.isnan(unc) else 1.5) ** 2)
+            w = float(Wm[sel].mean())
+            g = float(Gm[sel].max())
+            gs = float(Gs[sel].mean())
+            psel = P[(P.index > a) & (P.index <= b)]
+            psum = psel.sum(axis=0, min_count=2).dropna()
+            pamt = float(psum.mean()) if len(psum) else np.nan
+            pprob = float((psum >= 0.3).mean() * 100) if len(psum) else np.nan
+            d = wdir[(wdir.index > a) & (wdir.index <= b)]
+            dname = DIRS[int(((float(d.iloc[len(d) // 2]) + 22.5) % 360) // 45)] if len(d) and not np.isnan(d.iloc[len(d) // 2]) else ""
+            cp = cape[(cape.index > a) & (cape.index <= b)]
+            storm = len(cp) and float(cp.max()) >= 600 and not np.isnan(pprob) and pprob >= 30
+            rows.append(["%s %02d–%02d" % (DAYS[la.weekday()], la.hour, lb.hour),
+                         "%s °C (%s až %s)" % (cz(t, 0), cz(t - half, 0), cz(t + half, 0)),
+                         "%s / %s m/s %s" % (cz(w, 0), cz(g, 0), dname),
+                         ("%s mm (%s %%)" % (cz(pamt, 1), cz(pprob, 0))) if not np.isnan(pamt) and (pamt >= 0.1 or pprob >= 20) else "–",
+                         agreement(ts, 0.8) + (" ⚡" if storm else "")])
+            hourly_json.append({"from_utc": a.isoformat(), "to_utc": b.isoformat(), "temp": round(t, 1),
+                                "temp_lo": round(t - half, 1), "temp_hi": round(t + half, 1),
+                                "wind": round(w, 1), "gust": round(g, 1), "gust_spread": None if np.isnan(gs) else round(gs, 1),
+                                "dir": dname, "precip_mm": None if np.isnan(pamt) else round(pamt, 1),
+                                "precip_prob": None if np.isnan(pprob) else round(pprob),
+                                "models": int(Tn[sel].max())})
+        md.append("## %s" % site["name"])
+        md.append("")
+        md.append(md_table(["Kdy", "Teplota", "Vítr / nárazy", "Srážky (shoda modelů)", "Jistota teploty"], rows))
+        md.append("")
+        # dny 1-7
+        rows = []
+        daily_json = []
+        ldate = pd.Series(local.date, index=idx)
+        for d in sorted(set(ldate.values))[:8]:
+            sel = (ldate == d).to_numpy()
+            if sel.sum() < 12:
+                continue
+            tmin, tmax = float(Tm[sel].min()), float(Tm[sel].max())
+            gmax = float(Gm[sel].max())
+            psel = P[np.isin(P.index, idx[sel])]
+            psum = psel.sum(axis=0, min_count=12).dropna()
+            pamt = float(psum.median()) if len(psum) else np.nan
+            pprob = float((psum >= 1.0).mean() * 100) if len(psum) else np.nan
+            rng = (float(psum.quantile(0.1)), float(psum.quantile(0.9))) if len(psum) >= 3 else (np.nan, np.nan)
+            ts = float(Ts[sel].mean())
+            nmod = int(Tn[sel].max())
+            dd = pd.Timestamp(d)
+            rows.append(["%s %d. %d." % (DAYS[dd.weekday()], dd.day, dd.month),
+                         "%s / %s °C" % (cz(tmin, 0), cz(tmax, 0)),
+                         "%s m/s" % cz(gmax, 0),
+                         ("%s mm (%s–%s), %s %%" % (cz(pamt, 1), cz(rng[0], 0), cz(rng[1], 0), cz(pprob, 0))) if not np.isnan(pamt) else "–",
+                         agreement(ts, 0.8), str(nmod)])
+            daily_json.append({"date": str(d), "tmin": round(tmin, 1), "tmax": round(tmax, 1), "gust_max": round(gmax, 1),
+                               "precip_mm": None if np.isnan(pamt) else round(pamt, 1),
+                               "precip_prob_1mm": None if np.isnan(pprob) else round(pprob), "models": nmod})
+        md.append(md_table(["Den", "Min / max", "Max. náraz", "Srážky: medián (rozpětí), pravděp. ≥ 1 mm",
+                            "Shoda modelů", "Modelů"], rows))
+        md.append("")
+        if site["calib"] != key:
+            md.append("Pozn.: pro toto místo zatím chybí vlastní měření, kalibrace je převzatá z Černé v Pošumaví.")
+            md.append("")
+        result["sites"][key] = {"name": site["name"], "blocks_3h": hourly_json, "daily": daily_json,
+                                "models": sorted(per.keys())}
+
+    result["errors"] = STATE["errors"]
+    result["calibration"] = {"%s+%d" % k: v for k, v in calib.items()}
+    md.append("Vítr a nárazy odpovídají měření ČHMÚ v 10 m na otevřeném místě; v lese a u hladiny se liší. "
+              "Srážky nejsou kalibrované, procento udává, kolik modelů srážky dává.")
+    md.append("")
+    if STATE["errors"]:
+        md.append("Modely bez dat: " + "; ".join(sorted(set(e.split(" (")[0].split(":")[0] for e in STATE["errors"]))) + ".")
+        md.append("")
+    md.append("Zdroje: předpovědi Open-Meteo.com (CC BY 4.0), měření ČHMÚ (opendata.chmi.cz).")
+    text = "\n".join(md) + "\n"
+    os.makedirs(outdir, exist_ok=True)
+    with open(os.path.join(outdir, "predpoved.md"), "w", encoding="utf-8") as f:
+        f.write(text)
+    with open(os.path.join(outdir, "predpoved.json"), "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=1)
+    summ = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summ:
+        with open(summ, "a", encoding="utf-8") as f:
+            f.write(text)
+    log("\n" + text)
+    log("dotazů na Open-Meteo: %d, váha: %.0f, zbývá: %s" % (STATE["om_calls"], STATE["om_cost"], STATE["om_remaining"]))
+    send_telegram(text)
+
+
+def send_telegram(text):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if not token or not chat:
+        return
+    try:
+        r = requests.post("https://api.telegram.org/bot%s/sendMessage" % token,
+                          json={"chat_id": chat, "text": text[:3900]}, timeout=30)
+        log("Telegram: HTTP %d" % r.status_code)
+    except requests.RequestException as e:
+        log("Telegram selhal: %s" % type(e).__name__)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("mode", choices=["verify", "forecast", "both"])
+    ap.add_argument("--start", default="2025-10-01")
+    ap.add_argument("--out", default="out")
+    a = ap.parse_args()
+    if a.mode in ("verify", "both"):
+        run_verify(dt.date.fromisoformat(a.start), a.out)
+    if a.mode in ("forecast", "both"):
+        STATE["errors"] = []
+        run_forecast(a.out)
+
+
+if __name__ == "__main__":
+    main()
