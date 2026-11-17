@@ -986,6 +986,8 @@ def run_forecast(outdir):
             blend_rmse[(vk, L)] = rmse
     ncal = len(calib.get(("T", 1), {}))
     log("  modelů s kalibrací (teplota, +1 den): %d" % ncal)
+    calib_errors = list(STATE["errors"])
+    STATE["errors"] = []
 
     result = {"issued_utc": now.strftime("%Y-%m-%dT%H:%MZ"), "sites": {}, "errors": []}
     md = []
@@ -1101,6 +1103,10 @@ def run_forecast(outdir):
     md.append("")
     if STATE["errors"]:
         md.append("Modely bez dat: " + "; ".join(sorted(set(e.split(" (")[0].split(":")[0] for e in STATE["errors"]))) + ".")
+        md.append("")
+    if calib_errors:
+        md.append("Bez kalibrace (chybí historie předpovědí): "
+                  + "; ".join(sorted(set(e.split(" (")[0].split(":")[0] for e in calib_errors))) + ".")
         md.append("")
     md.append("Zdroje: předpovědi Open-Meteo.com (CC BY 4.0), měření ČHMÚ (opendata.chmi.cz).")
     text = "\n".join(md) + "\n"
