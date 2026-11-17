@@ -14,6 +14,8 @@ Skript nevyrábí nový fyzikální model. Bere předpovědi zhruba osmnácti ex
 | `out/skill.json` | totéž strojově; odsud si předpověď bere zvolený způsob kalibrace |
 | `out/predpoved.md` | aktuální předpověď pro obě místa |
 | `out/predpoved.json` | totéž strojově |
+| `data/stanice/<místo>/RRRR-MM.csv` | hodinová data vlastních stanic stažená z Weather Underground |
+| `data/pwl_<místo>.csv` | jednorázový export z ProWeatherLive převedený na hodiny (nepovinné) |
 
 ## Spuštění
 
@@ -29,14 +31,21 @@ Pravidelné spouštění je v souboru workflow připravené, ale zakomentované.
 
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`: předpověď se po každém běhu pošle do Telegramu
 - `OPENMETEO_API_KEY`: klíč k placenému tarifu Open-Meteo
+- `WU_API_KEY`: klíč API z Weather Underground (Member Settings → API Keys); skript si pak sám stahuje hodinová data vlastních stanic
 
 ## Zdroje a podmínky
 
 - Předpovědi: [Open-Meteo](https://open-meteo.com), data CC BY 4.0. Bezplatné API je jen pro nekomerční použití.
 - Měření: ČHMÚ, [opendata.chmi.cz](https://opendata.chmi.cz), stanice Černá v Pošumaví (0-203-0-11547).
 
+## Vlastní stanice
+
+- Lanový park (terasa): Weather Underground `IERNVP8`. Po doplnění `WU_API_KEY` se při `verify` stáhne historie a při každém běhu posledních 7 dní.
+- Wake Frymburk: na Weather Underground zatím není. Po založení zařízení doplnit jeho ID do `SITES["frymburk"]["wu"]` v `pocasi.py`.
+- Při `verify` se pro každou stanici s aspoň 45 dny dat spočítá vlastní vyhodnocení modelů a porovnání se stanicí ČHMÚ (vítr podle směru, teplota podle denní doby, srážky po měsících).
+- Předpověď pro Frymburk se kalibruje podle vlastní stanice, pokud má data mladší než 4 dny; jinak podle ČHMÚ v Černé.
+
 ## Co chybí
 
-- Vlastní stanice (lanový park, wake Frymburk) zatím nejsou napojené. Frymburk proto přebírá kalibraci z Černé.
 - Srážky nejsou kalibrované, jen se ukazuje shoda modelů.
 - Bouřky: jen hrubé riziko z modelů, žádný radar.

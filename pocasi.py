@@ -14,6 +14,7 @@ Zdroje dat:
 """
 import argparse
 import datetime as dt
+import glob
 import json
 import math
 import os
@@ -41,12 +42,14 @@ SITES = {
         "lat": 48.7356, "lon": 14.1073, "elev": 740,
         "chmi": "0-203-0-11547",      # stanice ČHMÚ Černá v Pošumaví
         "calib": "cerna",
+        "wu": "IERNVP8",               # vlastní stanice na Weather Underground (terasa u lanového parku)
     },
     "frymburk": {
         "name": "Frymburk – wake",
         "lat": 48.660, "lon": 14.171, "elev": 735,
-        "chmi": None,                  # vlastní stanice zatím není napojená
-        "calib": "cerna",              # do té doby kalibrace podle Černé
+        "chmi": None,
+        "calib": "cerna",              # bez čerstvých dat z vlastní stanice se kalibruje podle Černé
+        "wu": None,                    # doplnit ID, až bude stanice Wake Frymburk na Weather Underground
     },
 }
 
@@ -387,7 +390,172 @@ def obs_hourly(df10):
         out["G"] = g["Fmax"].max().where(g["Fmax"].count() >= 4).reindex(idx)
     if "SRA10M" in df10:
         out["P"] = g["SRA10M"].sum().where(g["SRA10M"].count() >= 5).reindex(idx)
+    if "D" in df10:
+        out["D"] = df10["D"].reindex(idx)
     return out
+
+
+# --------------------------------------------------------------------------
+# Vlastní stanice (Weather Underground + export z ProWeatherLive)
+# --------------------------------------------------------------------------
+
+WU = "https://api.weather.com/v2/pws"
+STATION_DIR = os.path.join("data", "stanice")
+STATION_COLS = ["T", "W", "G", "P", "D"]
+
+
+def wu_get(path, **params):
+    key = os.environ.get("WU_API_KEY", "").strip()
+    if not key:
+        return None
+    params.update({"format": "json", "units": "m", "numericPrecision": "decimal", "apiKey": key})
+    for attempt in range(4):
+        try:
+            r = SESSION.get(WU + path, params=params, timeout=60)
+        except requests.RequestException:
+            time.sleep(5 + 5 * attempt)
+            continue
+        if r.status_code == 200:
+            time.sleep(2.1)            # limit 30 dotazů za minutu
+            try:
+                return r.json().get("observations") or []
+            except ValueError:
+                return []
+        if r.status_code == 204:
+            time.sleep(2.1)
+            return []
+        if r.status_code in (401, 403):
+            raise ApiError("Weather Underground odmítl klíč (HTTP %d)" % r.status_code)
+        time.sleep(65 if r.status_code == 429 else 5 + 5 * attempt)
+    return None
+
+
+def wu_to_hourly(obs_list):
+    rows = []
+    for o in obs_list or []:
+        m, k = o.get("metric"), 1.0 / 3.6          # km/h -> m/s
+        if m is None:
+            m, k = o.get("metric_si"), 1.0
+        if not m or not o.get("obsTimeUtc"):
+            continue
+        ws, wg = m.get("windspeedAvg"), m.get("windgustHigh")
+        rows.append({"t": o["obsTimeUtc"], "loc": str(o.get("obsTimeLocal", ""))[:10], "T": m.get("tempAvg"),
+                     "W": None if ws is None else ws * k, "G": None if wg is None else wg * k,
+                     "ptot": m.get("precipTotal"), "D": o.get("winddirAvg")})
+    if not rows:
+        return pd.DataFrame(columns=STATION_COLS)
+    df = pd.DataFrame(rows)
+    df["t"] = pd.to_datetime(df["t"], utc=True).dt.tz_localize(None).dt.ceil("h")
+    df = df.drop_duplicates("t", keep="last").sort_values("t")
+    for c in ("T", "W", "G", "ptot", "D"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    d = df.groupby("loc")["ptot"].diff()
+    df["P"] = d.where(d.notna(), df["ptot"]).clip(lower=0)
+    return df.set_index("t")[STATION_COLS]
+
+
+def station_load(key):
+    paths = []
+    seed = os.path.join("data", "pwl_%s.csv" % key)
+    if os.path.exists(seed):
+        paths.append(seed)
+    paths += sorted(glob.glob(os.path.join(STATION_DIR, key, "*.csv")))
+    frames = []
+    for p in paths:
+        try:
+            d = pd.read_csv(p, parse_dates=["time"], index_col="time")
+            frames.append(d.reindex(columns=STATION_COLS))
+        except Exception as e:
+            log("  %s: nejde načíst (%s)" % (p, e))
+    if not frames:
+        return pd.DataFrame(columns=STATION_COLS)
+    df = pd.concat(frames)
+    return df[~df.index.duplicated(keep="last")].sort_index()
+
+
+def station_update(key, start=None, end=None, backfill=False):
+    """Hodinová data vlastní stanice: uložená v repozitáři + doplnění z Weather Underground."""
+    df = station_load(key)
+    sid = SITES[key].get("wu")
+    if not sid or not os.environ.get("WU_API_KEY", "").strip():
+        log("  %s: uložených hodin %d, Weather Underground se nedotazuji (%s)"
+            % (key, len(df), "chybí ID stanice" if not sid else "chybí WU_API_KEY"))
+        return df
+    new = []
+    try:
+        new.append(wu_to_hourly(wu_get("/observations/hourly/7day", stationId=sid)))
+        if backfill and start and end:
+            have = set()
+            if len(df):
+                cnt = pd.Series(1, index=df.index[df["T"].notna()]).groupby(lambda t: t.date()).sum()
+                have = set(cnt[cnt >= 20].index)
+            d, n = start, 0
+            while d <= end and n < 450:
+                if d not in have:
+                    new.append(wu_to_hourly(wu_get("/history/hourly", stationId=sid, date=d.strftime("%Y%m%d"))))
+                    n += 1
+                d += dt.timedelta(days=1)
+            log("  %s: doplněno dní z Weather Underground: %d" % (key, n))
+    except ApiError as e:
+        log("  %s: %s" % (key, e))
+        STATE["errors"].append("vlastní stanice %s: %s" % (key, e))
+    new = [x for x in new if x is not None and len(x)]
+    if not new:
+        return df
+    add = pd.concat(new)
+    merged = pd.concat([df, add])
+    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    os.makedirs(os.path.join(STATION_DIR, key), exist_ok=True)
+    changed = set(zip(add.index.year, add.index.month))
+    for (y, m) in sorted(changed):
+        part = merged[(merged.index.year == y) & (merged.index.month == m)]
+        part.to_csv(os.path.join(STATION_DIR, key, "%04d-%02d.csv" % (y, m)), float_format="%.2f", index_label="time")
+    log("  %s: hodin celkem %d (nových/aktualizovaných %d)" % (key, len(merged), len(add)))
+    return merged
+
+
+def station_vs_chmi(name, st, ref):
+    """Porovnání vlastní stanice se stanicí ČHMÚ: vítr podle směru, teplota podle denní doby, srážky po měsících."""
+    md = ["## %s: vlastní stanice proti stanici ČHMÚ v Černé" % name, ""]
+    j = st.join(ref, how="inner", lsuffix="_s", rsuffix="_c")
+    if len(j) < 24 * 30:
+        return md + ["Málo společných hodin.", ""]
+    need = {"D_c", "W_s", "W_c", "G_s", "G_c"}
+    if need.issubset(j.columns):
+        jj = j[(j["W_c"] >= 2.0) & j["D_c"].notna() & j["W_s"].notna()]
+        sec = (((jj["D_c"] + 22.5) % 360) // 45).astype(int)
+        rows = []
+        for k in range(8):
+            x = jj[sec == k]
+            if len(x) >= 40:
+                gc = x["G_c"].mean()
+                rows.append([DIRS[k], str(len(x)), cz(x["W_c"].mean(), 1), cz(x["W_s"].mean(), 1),
+                             cz(100 * x["W_s"].mean() / x["W_c"].mean(), 0) + " %",
+                             (cz(100 * x["G_s"].mean() / gc, 0) + " %") if gc > 0 else "–"])
+        if rows:
+            md += ["Vítr podle směru (jen hodiny, kdy ČHMÚ měřil aspoň 2 m/s; směr podle ČHMÚ):", "",
+                   md_table(["Vítr od", "Hodin", "ČHMÚ (m/s)", "Stanice (m/s)", "Průměr: stanice / ČHMÚ",
+                             "Nárazy: stanice / ČHMÚ"], rows), ""]
+    if "T_s" in j and "T_c" in j:
+        d = (j["T_s"] - j["T_c"]).dropna()
+        hrs = [0, 3, 6, 9, 12, 15, 18, 21]
+        rows = []
+        for nm, x in (("léto (V–IX)", d[(d.index.month >= 5) & (d.index.month <= 9)]),
+                      ("zima (XI–III)", d[(d.index.month >= 11) | (d.index.month <= 3)]), ("celé období", d)):
+            if len(x) > 200:
+                g = x.groupby(x.index.hour).mean()
+                rows.append([nm] + [cz(float(g.get(h, np.nan)), 1) for h in hrs])
+        if rows:
+            md += ["Rozdíl teploty stanice − ČHMÚ podle denní doby (°C, hodiny v UTC):", "",
+                   md_table(["Období"] + ["%02d h" % h for h in hrs], rows), ""]
+    if "P_s" in j and "P_c" in j:
+        both = j[["P_s", "P_c"]].dropna()
+        if len(both):
+            g = both.groupby([both.index.year, both.index.month]).sum()
+            rows = [["%d/%d" % (mm, yy), cz(float(r["P_c"]), 0), cz(float(r["P_s"]), 0)] for (yy, mm), r in g.iterrows()]
+            md += ["Srážky po měsících (mm, jen hodiny, kdy měřily obě stanice):", "",
+                   md_table(["Měsíc", "ČHMÚ", "Stanice"], rows), ""]
+    return md
 
 
 # --------------------------------------------------------------------------
@@ -582,33 +750,12 @@ def season_mask(idx, name):
 # Režim: zpětné vyhodnocení
 # --------------------------------------------------------------------------
 
-def run_verify(start, outdir):
-    site = SITES["cerna"]
-    today = dt.datetime.now(dt.timezone.utc).date()
-    end = today - dt.timedelta(days=1)
-    log("== Zpětné vyhodnocení %s až %s, stanice ČHMÚ %s" % (start, end, site["chmi"]))
-
-    log("-- měření ČHMÚ")
-    df10 = fetch_chmi_10min(site["chmi"], start, end)
-    obs = obs_hourly(df10)
-    if obs.empty:
-        raise SystemExit("Nepodařilo se načíst měření ČHMÚ.")
-    log("  hodinových záznamů: %d (%s až %s)" % (len(obs), obs.index.min(), obs.index.max()))
-    log("  platných hodnot: " + ", ".join("%s %d" % (k, int(obs[k].notna().sum())) for k in obs.columns))
-
-    log("-- archiv předpovědí Open-Meteo")
-    fc = fetch_previous_runs(site, start, end)
-    log("  dotazů: %d, váha: %.0f, zbývá v limitu: %s" % (STATE["om_calls"], STATE["om_cost"], STATE["om_remaining"]))
-    if all(v.empty for v in fc.values()):
-        raise SystemExit("Nepodařilo se načíst žádné předpovědi: " + "; ".join(STATE["errors"][:5]))
-
+def verify_target(title, intro, obs, fc, start, end, station_id):
     md = []
-    skill = {"period": [str(start), str(end)], "station": site["chmi"], "models": {}, "blend": {}, "method": {}}
-    md.append("# Jak se modely trefují v Černé v Pošumaví")
+    skill = {"period": [str(start), str(end)], "station": station_id, "models": {}, "blend": {}, "method": {}}
+    md.append("# " + title)
     md.append("")
-    md.append("Období: %s až %s. Měřítko: stanice ČHMÚ Černá v Pošumaví (740 m), desetiminutová data převedená na hodinová. "
-              "Předpovědi: archiv Open-Meteo, vždy to, co model říkal 1, 2, 3 a 5 dní předem. Časy v UTC."
-              % (start.strftime("%-d. %-m. %Y"), end.strftime("%-d. %-m. %Y")))
+    md.append(intro)
     md.append("")
     md.append("Chyba = průměrná absolutní odchylka předpovědi od měření (menší je lepší). "
               "Odchylka = průměr (předpověď − měření); kladná znamená, že model nadsazuje.")
@@ -819,6 +966,53 @@ def run_verify(start, outdir):
         md.insert(5, "## Shrnutí\n\n" + md_table(
             ["Veličina", "Předstih", "Nejlepší jednotlivý model", "Prostý průměr modelů", "Kalibrovaná směs",
              "Směs proti nejlepšímu"], summary_rows) + "\n")
+    return md, skill
+
+
+def run_verify(start, outdir):
+    site = SITES["cerna"]
+    today = dt.datetime.now(dt.timezone.utc).date()
+    end = today - dt.timedelta(days=1)
+    log("== Zpětné vyhodnocení %s až %s, stanice ČHMÚ %s" % (start, end, site["chmi"]))
+
+    log("-- měření ČHMÚ")
+    df10 = fetch_chmi_10min(site["chmi"], start, end)
+    obs = obs_hourly(df10)
+    if obs.empty:
+        raise SystemExit("Nepodařilo se načíst měření ČHMÚ.")
+    log("  hodinových záznamů: %d (%s až %s)" % (len(obs), obs.index.min(), obs.index.max()))
+    log("  platných hodnot: " + ", ".join("%s %d" % (k, int(obs[k].notna().sum())) for k in obs.columns))
+
+    log("-- archiv předpovědí Open-Meteo")
+    fc = fetch_previous_runs(site, start, end)
+    log("  dotazů: %d, váha: %.0f, zbývá v limitu: %s" % (STATE["om_calls"], STATE["om_cost"], STATE["om_remaining"]))
+    if all(v.empty for v in fc.values()):
+        raise SystemExit("Nepodařilo se načíst žádné předpovědi: " + "; ".join(STATE["errors"][:5]))
+
+    period = "%s až %s" % (start.strftime("%-d. %-m. %Y"), end.strftime("%-d. %-m. %Y"))
+    md, skill = verify_target(
+        "Jak se modely trefují v Černé v Pošumaví (stanice ČHMÚ)",
+        "Období: %s. Měřítko: stanice ČHMÚ Černá v Pošumaví (740 m), desetiminutová data převedená na hodinová. "
+        "Předpovědi: archiv Open-Meteo, vždy to, co model říkal 1, 2, 3 a 5 dní předem. Časy v UTC." % period,
+        obs, fc, start, end, site["chmi"])
+    skill["targets"] = {}
+    for key, s_site in SITES.items():
+        log("-- vlastní stanice: %s" % s_site["name"])
+        st = station_update(key, start, end, backfill=True)
+        if len(st):
+            st = st[(st.index >= pd.Timestamp(start)) & (st.index < pd.Timestamp(end) + pd.Timedelta(days=1))]
+        if not len(st) or st["T"].notna().sum() < 24 * 45:
+            log("  málo dat, vynechávám")
+            continue
+        s0 = max(start, st.index.min().date())
+        fcs = fc if key == "cerna" else fetch_previous_runs(s_site, s0, end)
+        m2, s2 = verify_target(
+            "%s: modely proti vlastní stanici" % s_site["name"],
+            "Období: %s až %s. Měřítko: vlastní stanice GARNI, hodinové hodnoty. Časy v UTC."
+            % (s0.strftime("%-d. %-m. %Y"), end.strftime("%-d. %-m. %Y")),
+            st, fcs, s0, end, s_site.get("wu") or "PWL")
+        md += ["", "---", ""] + m2 + [""] + station_vs_chmi(s_site["name"], st, obs)
+        skill["targets"][key] = s2
     if STATE["errors"]:
         md.append("## Co se nepodařilo načíst")
         md.append("")
@@ -957,35 +1151,57 @@ def run_forecast(outdir):
     now = pd.Timestamp(dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))
     today = now.date()
     method = dict(DEFAULT_METHOD)
+    by_target = {}
     try:
         with open(os.path.join(outdir, "skill.json"), encoding="utf-8") as f:
-            for k, v in (json.load(f).get("method") or {}).items():
-                method[k] = (v["mode"], int(v["window"]))
-    except (OSError, ValueError, KeyError):
+            sk = json.load(f)
+        for k, v in (sk.get("method") or {}).items():
+            method[k] = (v["mode"], int(v["window"]))
+        for tk, tv in (sk.get("targets") or {}).items():
+            by_target[tk] = {k: (v["mode"], int(v["window"])) for k, v in (tv.get("method") or {}).items()}
+    except (OSError, ValueError, KeyError, TypeError):
         pass
-    log("  způsob kalibrace: %s" % method)
-    maxwin = max(w for _, w in method.values())
+    log("  způsob kalibrace: %s %s" % (method, by_target))
+    maxwin = max([w for _, w in method.values()] + [w for t in by_target.values() for _, w in t.values()])
     start = today - dt.timedelta(days=maxwin + 20)
     cal_site = SITES["cerna"]
     log("== Předpověď, vydáno %s UTC" % now.strftime("%Y-%m-%d %H:%M"))
 
+    def build(site_fc, obs_k, meth):
+        fc = fetch_previous_runs(site_fc, start, today, var_keys=("T", "W", "G"), leads=[1, 2, 3, 5])
+        cal, rm = {}, {}
+        for vk in ("T", "W", "G"):
+            kind = VARS[vk][1]
+            for L in (1, 2, 3, 5):
+                E = fc.get((vk, L), pd.DataFrame())
+                if E.empty or vk not in obs_k or obs_k[vk].notna().sum() == 0:
+                    continue
+                c, rmse = current_calibration(E, obs_k[vk], kind, mode=meth[vk][0], window=meth[vk][1])
+                cal[(vk, L)] = c
+                rm[(vk, L)] = rmse
+        return cal, rm
+
     log("-- měření ČHMÚ za kalibrační okno")
     obs = obs_hourly(fetch_chmi_10min(cal_site["chmi"], start, today))
     log("-- poslední předpovědi modelů za kalibrační okno")
-    fc = fetch_previous_runs(cal_site, start, today, var_keys=("T", "W", "G"), leads=[1, 2, 3, 5])
-    calib = {}
-    blend_rmse = {}
-    for vk in ("T", "W", "G"):
-        kind = VARS[vk][1]
-        for L in (1, 2, 3, 5):
-            E = fc.get((vk, L), pd.DataFrame())
-            if E.empty or vk not in obs:
-                continue
-            c, rmse = current_calibration(E, obs[vk], kind, mode=method[vk][0], window=method[vk][1])
-            calib[(vk, L)] = c
-            blend_rmse[(vk, L)] = rmse
-    ncal = len(calib.get(("T", 1), {}))
+    calib0, rmse0 = build(cal_site, obs, method)
+    ncal = len(calib0.get(("T", 1), {}))
     log("  modelů s kalibrací (teplota, +1 den): %d" % ncal)
+    per_site = {}
+    for key, site in SITES.items():
+        per_site[key] = (calib0, rmse0, "stanice ČHMÚ Černá v Pošumaví")
+        st = station_update(key)
+        if key == "cerna" or not len(st) or st["T"].notna().sum() == 0:
+            continue
+        if (now - st["T"].dropna().index.max()) > pd.Timedelta(days=4):
+            log("  %s: data z vlastní stanice jsou starší než 4 dny, kalibruji podle ČHMÚ" % key)
+            continue
+        meth = dict(method)
+        meth.update(by_target.get(key, {}))
+        log("-- kalibrace podle vlastní stanice: %s" % site["name"])
+        c2, r2 = build(site, st, meth)
+        if len(c2.get(("T", 1), {})) >= 3:
+            per_site[key] = (c2, r2, "vlastní stanice")
     calib_errors = list(STATE["errors"])
     STATE["errors"] = []
 
@@ -994,8 +1210,7 @@ def run_forecast(outdir):
     issued_local = dt.datetime.now(TZ)
     md.append("# Předpověď pro Lipno – kalibrovaná směs modelů")
     md.append("")
-    md.append("Vydáno %s %s. Kalibrace podle stanice ČHMÚ Černá v Pošumaví za posledních %d dní."
-              % (DAYS[issued_local.weekday()], issued_local.strftime("%-d. %-m. %Y %H:%M"), method["T"][1]))
+    md.append("Vydáno %s %s." % (DAYS[issued_local.weekday()], issued_local.strftime("%-d. %-m. %Y %H:%M")))
     md.append("")
 
     for key, site in SITES.items():
@@ -1004,6 +1219,7 @@ def run_forecast(outdir):
         if len(per) < 2:
             md.append("## %s\n\nNepodařilo se načíst dost modelů.\n" % site["name"])
             continue
+        calib, blend_rmse, src = per_site[key]
         cal = apply_calibration(per, calib, now)
         Tm, Ts, Tn = wmean_std(*cal["T"])
         Wm, Ws, _ = wmean_std(*cal["W"])
@@ -1090,15 +1306,14 @@ def run_forecast(outdir):
         md.append(md_table(["Den", "Min / max", "Max. náraz", "Srážky: medián (rozpětí), pravděp. ≥ 1 mm",
                             "Shoda modelů", "Modelů"], rows))
         md.append("")
-        if site["calib"] != key:
-            md.append("Pozn.: pro toto místo zatím chybí vlastní měření, kalibrace je převzatá z Černé v Pošumaví.")
-            md.append("")
+        md.append("Kalibrace: %s." % src)
+        md.append("")
         result["sites"][key] = {"name": site["name"], "blocks_3h": hourly_json, "daily": daily_json,
-                                "models": sorted(per.keys())}
+                                "models": sorted(per.keys()), "calibration_source": src}
 
     result["errors"] = STATE["errors"]
-    result["calibration"] = {"%s+%d" % k: v for k, v in calib.items()}
-    md.append("Vítr a nárazy odpovídají měření ČHMÚ v 10 m na otevřeném místě; v lese a u hladiny se liší. "
+    result["calibration"] = {"%s+%d" % k: v for k, v in calib0.items()}
+    md.append("Vítr a nárazy odpovídají stanici, podle které se kalibruje. "
               "Srážky nejsou kalibrované, procento udává, kolik modelů srážky dává.")
     md.append("")
     if STATE["errors"]:
