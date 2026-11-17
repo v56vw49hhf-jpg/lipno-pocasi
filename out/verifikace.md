@@ -1,4 +1,4 @@
-# Jak se modely trefují v Černé v Pošumaví
+# Jak se modely trefují v Černé v Pošumaví (stanice ČHMÚ)
 
 Období: 1. 10. 2025 až 16. 11. 2026. Měřítko: stanice ČHMÚ Černá v Pošumaví (740 m), desetiminutová data převedená na hodinová. Předpovědi: archiv Open-Meteo, vždy to, co model říkal 1, 2, 3 a 5 dní předem. Časy v UTC.
 
@@ -207,5 +207,186 @@ Zachycené deště = podíl dní s naměřeným úhrnem aspoň 1 mm, které mode
 | ALADIN-CE 2,3 km | 1,35 | 0,04 | 83 % | 28 % | – | 146 |
 | HARMONIE-DMI 2 km | 1,43 | 0,19 | 82 % | 29 % | – | 382 |
 | GFS 13 km | 1,48 | 0,52 | 81 % | 32 % | 1,57 | 382 |
+
+
+---
+
+# Frymburk – wake: modely proti vlastní stanici
+
+Období: 21. 12. 2025 až 16. 11. 2026. Měřítko: vlastní stanice GARNI, hodinové hodnoty po vyřazení vadných úseků. Časy v UTC.
+
+Chyba = průměrná absolutní odchylka předpovědi od měření (menší je lepší). Odchylka = průměr (předpověď − měření); kladná znamená, že model nadsazuje.
+## Shrnutí
+
+| Veličina | Předstih | Nejlepší jednotlivý model | Prostý průměr modelů | Kalibrovaná směs | Směs proti nejlepšímu |
+|---|---|---|---|---|---|
+| Teplota | +1 d | 1,77 | 1,92 | 1,65 | 7 % |
+| Teplota | +2 d | 1,87 | 1,94 | 1,68 | 10 % |
+| Teplota | +3 d | 2,02 | 2,06 | 1,78 | 12 % |
+| Teplota | +5 d | 2,56 | 2,45 | 2,19 | 14 % |
+
+
+## Teplota (°C)
+
+| Model | Chyba +1 den | +2 dny | +3 dny | +5 dní | Odchylka +1 den | Hodin (+1 den) |
+|---|---|---|---|---|---|---|
+| C-LAEF 1 km | 1,36 | – | – | – | 0,44 | 354 |
+| UKMO 10 km | 1,82 | 1,93 | 2,05 | 2,62 | 1,35 | 6752 |
+| ALADIN-CE 2,3 km | 1,90 | 1,99 | – | – | 1,06 | 3273 |
+| ALADIN-CZ 1 km | 1,94 | 2,02 | – | – | 1,08 | 3273 |
+| ICON-CH2 2 km | 1,96 | 2,08 | 2,19 | – | 1,36 | 7472 |
+| ECMWF IFS 0,25° | 1,97 | 2,04 | 2,12 | 2,63 | 1,27 | 7472 |
+| GFS 13 km | 2,05 | 2,14 | 2,25 | 2,77 | 0,88 | 7472 |
+| ECMWF AIFS (AI) | 2,09 | 2,19 | 2,26 | 2,59 | 1,38 | 7472 |
+| HARMONIE-DMI 2 km | 2,11 | – | – | – | 1,13 | 7472 |
+| ECMWF IFS 9 km | 2,11 | 2,16 | 2,24 | 2,75 | 1,22 | 7107 |
+| ARPEGE 11 km | 2,14 | 2,27 | 2,42 | – | 1,48 | 7472 |
+| HARMONIE-KNMI 5,5 km | 2,19 | – | – | – | 1,32 | 7433 |
+| ICON-EU 7 km | 2,27 | 2,34 | 2,45 | – | 1,89 | 7472 |
+| Open-Meteo best match | 2,31 | 2,34 | 2,45 | 3,11 | 1,82 | 7472 |
+| ICON-D2 2 km | 2,32 | – | – | – | 1,83 | 7420 |
+| AROME-FR 1,3 km | 2,33 | – | – | – | 1,32 | 7472 |
+| GEM 15 km | 2,33 | 2,32 | 2,53 | 2,88 | 1,57 | 7355 |
+| ICON 13 km | 2,39 | 2,46 | 2,56 | 3,10 | 2,00 | 7395 |
+
+**Který způsob kalibrace funguje nejlíp** (chyba směsi; vše počítáno jen z dat starších než den vydání):
+
+| Způsob | +1 den | +2 dny | +3 dny | +5 dní |
+|---|---|---|---|---|
+| bez opravy, jen váhy podle úspěšnosti | 1,87 | 1,90 | 2,02 | 2,44 |
+| oprava průměrné odchylky, okno 15 dní | 1,83 | 1,84 | 1,93 | 2,37 |
+| oprava průměrné odchylky, okno 30 dní | 1,85 | 1,85 | 1,94 | 2,35 |
+| oprava průměrné odchylky, okno 60 dní | 1,83 | 1,83 | 1,92 | 2,31 |
+| oprava odchylky podle denní doby, okno 30 dní | 1,65 | 1,70 | 1,81 | 2,24 |
+| **oprava odchylky podle denní doby, okno 60 dní** | 1,65 | 1,68 | 1,78 | 2,19 |
+
+**Směs (oprava odchylky podle denní doby, okno 60 dní) proti jednotlivým modelům** na stejných hodinách:
+
+| Předstih | Směs | Nejlepší jednotlivý model | Prostý průměr modelů | Open-Meteo best match | Zlepšení proti nejlepšímu | Hodin |
+|---|---|---|---|---|---|---|
+| +1 d | 1,65 | 1,77 (UKMO 10 km) | 1,92 | 2,29 | 7 % | 6673 |
+| +2 d | 1,68 | 1,87 (UKMO 10 km) | 1,94 | 2,30 | 10 % | 6601 |
+| +3 d | 1,78 | 2,02 (UKMO 10 km) | 2,06 | 2,41 | 12 % | 6529 |
+| +5 d | 2,19 | 2,56 (ECMWF AIFS (AI)) | 2,45 | 3,00 | 14 % | 6409 |
+
+Podle sezóny:
+
+| Sezóna | Předstih | Směs | Nejlepší jednotlivý model | Hodin |
+|---|---|---|---|---|
+| léto (V–IX) | +1 d | 1,52 | 1,80 (UKMO 10 km) | 2919 |
+| zima (XI–III) | +1 d | 1,79 | 1,71 (ARPEGE 11 km) | 2298 |
+| léto (V–IX) | +3 d | 1,69 | 2,02 (UKMO 10 km) | 2871 |
+| zima (XI–III) | +3 d | 1,84 | 1,84 (ARPEGE 11 km) | 2202 |
+
+**Vyplatí se kalibrovat podle vlastní stanice?** Chyba směsi proti vlastní stanici, když se opravy a váhy modelů počítají z vlastní stanice, nebo se převezmou z ČHMÚ Černá:
+
+| Předstih | Vlastní stanice | Převzato z ČHMÚ Černá | Jen noc: vlastní | Jen noc: převzato | Jen noc: odchylka převzaté | Hodin |
+|---|---|---|---|---|---|---|
+| +1 d | 1,65 | 1,70 | 2,06 | 2,12 | 0,46 | 6673 |
+| +2 d | 1,68 | 1,73 | 2,05 | 2,08 | 0,27 | 6601 |
+| +3 d | 1,78 | 1,83 | 2,14 | 2,18 | 0,29 | 6529 |
+| +5 d | 2,19 | 2,25 | 2,47 | 2,50 | 0,20 | 6409 |
+
+Stanice proti ČHMÚ: přes den (slunce nad 10°) v průměru −0,1 °C, v noci 0,1 °C.
+
+Závěr: kalibrace podle vlastní stanice je lepší, předpověď ji použije.
+
+Odchylka teploty podle denní doby (předstih 1 den, hodiny v UTC; SEČ = UTC + 1):
+
+| Model | 00 h | 03 h | 06 h | 09 h | 12 h | 15 h | 18 h | 21 h |
+|---|---|---|---|---|---|---|---|---|
+| C-LAEF 1 km | 0,6 | 0,6 | 0,6 | 0,4 | 0,6 | 0,3 | 0,2 | 0,1 |
+| UKMO 10 km | 1,8 | 1,6 | 1,5 | 1,0 | 0,7 | 0,7 | 1,1 | 2,2 |
+| ALADIN-CE 2,3 km | 2,1 | 2,0 | 1,1 | 0,3 | 0,4 | −0,1 | 0,3 | 2,1 |
+| ALADIN-CZ 1 km | 2,1 | 2,1 | 1,2 | 0,2 | 0,4 | −0,2 | 0,3 | 2,2 |
+| ICON-CH2 2 km | 2,3 | 2,4 | 1,5 | 0,6 | 0,5 | 0,3 | 0,8 | 2,3 |
+| ECMWF IFS 0,25° | 2,1 | 2,3 | 1,9 | 0,9 | 0,7 | 0,1 | 0,2 | 1,9 |
+| GFS 13 km | 1,6 | 1,9 | 1,6 | 0,9 | 0,6 | −0,3 | −0,8 | 1,3 |
+| ECMWF AIFS (AI) | 2,4 | 2,7 | 1,6 | 0,0 | 0,3 | −0,3 | 1,2 | 3,0 |
+
+## Srážky (denní úhrny, mm)
+
+Zachycené deště = podíl dní s naměřeným úhrnem aspoň 1 mm, které model předpověděl. Plané poplachy = podíl dní, kdy model dal aspoň 1 mm a nenapršelo.
+
+| Model | Chyba +1 den | Odchylka +1 den | Zachycené deště | Plané poplachy | Chyba +3 dny | Dní |
+|---|---|---|---|---|---|---|
+| Medián modelů | 0,98 | −0,48 | 62 % | 29 % | 1,01 | 248 |
+| ICON-CH2 2 km | 1,06 | −0,07 | 67 % | 33 % | 1,42 | 248 |
+| ICON-EU 7 km | 1,13 | 0,23 | 78 % | 39 % | 1,31 | 248 |
+| ICON 13 km | 1,16 | 0,44 | 77 % | 39 % | 1,44 | 244 |
+| ICON-D2 2 km | 1,17 | 0,40 | 78 % | 37 % | – | 248 |
+| ECMWF IFS 9 km | 1,18 | 0,23 | 83 % | 38 % | 1,66 | 248 |
+| ECMWF AIFS (AI) | 1,18 | 0,43 | 91 % | 46 % | 1,41 | 248 |
+| ARPEGE 11 km | 1,23 | 0,12 | 69 % | 37 % | 1,36 | 248 |
+| AROME-FR 1,3 km | 1,23 | 0,20 | 74 % | 37 % | – | 248 |
+| UKMO 10 km | 1,24 | −0,09 | 51 % | 44 % | 1,33 | 232 |
+| Open-Meteo best match | 1,27 | 0,52 | 78 % | 38 % | 1,33 | 248 |
+| ECMWF IFS 0,25° | 1,33 | 0,36 | 79 % | 44 % | 1,48 | 248 |
+| GEM 15 km | 1,35 | 0,32 | 76 % | 41 % | 1,68 | 248 |
+| ALADIN-CE 2,3 km | 1,42 | 0,48 | 94 % | 33 % | – | 84 |
+| ALADIN-CZ 1 km | 1,43 | 0,50 | 94 % | 33 % | – | 84 |
+| HARMONIE-KNMI 5,5 km | 1,43 | 0,53 | 83 % | 38 % | – | 248 |
+| HARMONIE-DMI 2 km | 1,49 | 0,50 | 79 % | 39 % | – | 248 |
+| GFS 13 km | 1,84 | 1,15 | 81 % | 45 % | 1,86 | 248 |
+
+
+## Frymburk – wake: vlastní stanice proti stanici ČHMÚ v Černé
+
+Kontrola dat stanice:
+
+- vítr vyřazen (anemometr stál nebo namrzl): 1050 h, hlavně 29. 1. – 30. 1. 2026, 2. 6. – 3. 7. 2026, 6. 7. – 7. 7. 2026, 3. 10. – 5. 10. 2026
+- srážky vyřazeny za měsíce 10/2026, 11/2026 (stanice naměřila méně než pětinu úhrnu ČHMÚ: ucpaný srážkoměr, v zimě sníh)
+
+Vítr podle směru (jen hodiny, kdy ČHMÚ měřil aspoň 2 m/s; směr podle ČHMÚ; průměr a nejvyšší náraz za hodinu v m/s):
+
+| Vítr od | Hodin | Průměr ČHMÚ | Průměr stanice | Stanice / ČHMÚ | Náraz ČHMÚ | Náraz stanice | Stanice / ČHMÚ |
+|---|---|---|---|---|---|---|---|
+| S | 119 | 2,9 | 1,9 | 66 % | 8,0 | 4,1 | 51 % |
+| SV | 668 | 2,8 | 1,2 | 43 % | 6,8 | 2,9 | 42 % |
+| V | 49 | 2,5 | 0,9 | 36 % | 6,3 | 2,4 | 39 % |
+| J | 208 | 3,2 | 0,8 | 24 % | 5,8 | 2,1 | 36 % |
+| JZ | 865 | 3,9 | 1,2 | 31 % | 7,2 | 3,2 | 45 % |
+| Z | 694 | 4,1 | 1,9 | 46 % | 8,3 | 4,5 | 55 % |
+| SZ | 57 | 2,6 | 1,4 | 55 % | 7,3 | 3,5 | 49 % |
+| **všechny směry** | 2687 | 3,5 | 1,4 | 39 % | 7,3 | 3,4 | 47 % |
+
+Nárazy stanice jsou podhodnocené i tím, že se ukládá jedna okamžitá hodnota za 5 minut, kdežto ČHMÚ zaznamená nejvyšší náraz z celých deseti minut.
+
+Co ukáže stanice, když ČHMÚ naměří silný náraz (m/s):
+
+| Náraz ČHMÚ | Hodin | Stanice: typicky | Stanice: 80 % případů | Stanice: nejvíc |
+|---|---|---|---|---|
+| 8–11 | 658 | 4,5 | 2,3–6,8 | 11,1 |
+| 11–14 | 183 | 6,1 | 2,9–8,3 | 12,6 |
+| 14–17 | 27 | 7,3 | 4,7–10,5 | 15,2 |
+
+Rozdíl teploty stanice − ČHMÚ podle denní doby (°C, hodiny v UTC; SEČ = UTC + 1, letní čas = UTC + 2):
+
+| Období | 00 h | 03 h | 06 h | 09 h | 12 h | 15 h | 18 h | 21 h | Průměr |
+|---|---|---|---|---|---|---|---|---|---|
+| léto (V–IX) | 0,3 | 0,0 | −0,4 | −0,6 | −0,6 | −0,2 | 0,6 | 0,1 | −0,1 |
+| zima (XI–III) | 0,1 | 0,1 | 0,0 | 0,6 | 0,5 | 0,4 | −0,1 | 0,0 | 0,2 |
+| celé období | 0,2 | 0,1 | −0,3 | 0,0 | −0,1 | 0,0 | 0,3 | 0,1 | 0,0 |
+
+Srážky po měsících (mm, jen hodiny, kdy měřily obě stanice; před vyřazením vadných měsíců):
+
+| Měsíc | ČHMÚ | Stanice | Stanice / ČHMÚ |
+|---|---|---|---|
+| 12/2025 | 11 | 0 | 0 % |
+| 1/2026 | 23 | 15 | 65 % |
+| 2/2026 | 43 | 45 | 105 % |
+| 3/2026 | 9 | 9 | 98 % |
+| 4/2026 | 0 | 0 | – |
+| 5/2026 | 74 | 40 | 54 % |
+| 6/2026 | 104 | 96 | 93 % |
+| 7/2026 | 21 | 12 | 57 % |
+| 8/2026 | 63 | 62 | 98 % |
+| 9/2026 | 29 | 31 | 105 % |
+| 10/2026 | 24 | 5 | 19 % |
+| 11/2026 | 22 | 0 | 0 % |
+
+## Co se nepodařilo načíst
+
+- ICON-CH1 1 km: bez dat
 
 Zdroje: předpovědi Open-Meteo.com (CC BY 4.0), měření ČHMÚ (opendata.chmi.cz).
