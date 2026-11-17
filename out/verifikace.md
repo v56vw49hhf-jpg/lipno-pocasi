@@ -211,6 +211,78 @@ Zachycené deště = podíl dní s naměřeným úhrnem aspoň 1 mm, které mode
 
 ---
 
+## Černá v Pošumaví – lanový park: vlastní stanice proti stanici ČHMÚ v Černé
+
+Kontrola dat stanice:
+
+- čidlo neposílalo data (opakovaly se stejné hodnoty): 52 h, hlavně 15. 12. – 16. 12. 2025, 17. 12. – 18. 12. 2025
+- vítr vyřazen (anemometr stál nebo namrzl): 278 h, hlavně 22. 12. – 23. 12. 2025, 26. 12. – 28. 12. 2025, 28. 12. – 29. 12. 2025, 17. 1. – 21. 1. 2026
+
+Vítr podle směru (jen hodiny, kdy ČHMÚ měřil aspoň 2 m/s; směr podle ČHMÚ; průměr a nejvyšší náraz za hodinu v m/s):
+
+| Vítr od | Hodin | Průměr ČHMÚ | Průměr stanice | Stanice / ČHMÚ | Náraz ČHMÚ | Náraz stanice | Stanice / ČHMÚ |
+|---|---|---|---|---|---|---|---|
+| S | 144 | 2,9 | 1,8 | 64 % | 7,9 | 4,9 | 62 % |
+| SV | 656 | 2,8 | 2,2 | 81 % | 6,8 | 4,8 | 70 % |
+| V | 60 | 2,5 | 1,4 | 57 % | 6,5 | 3,9 | 60 % |
+| J | 237 | 3,1 | 0,2 | 7 % | 5,8 | 1,4 | 24 % |
+| JZ | 1055 | 3,9 | 1,3 | 34 % | 7,1 | 3,8 | 54 % |
+| Z | 1019 | 4,1 | 3,2 | 76 % | 8,4 | 6,5 | 77 % |
+| SZ | 91 | 2,6 | 2,5 | 94 % | 7,5 | 6,1 | 82 % |
+| **všechny směry** | 3290 | 3,6 | 2,0 | 57 % | 7,4 | 4,8 | 64 % |
+
+Nárazy stanice jsou podhodnocené i tím, že se ukládá jedna okamžitá hodnota za 5 minut, kdežto ČHMÚ zaznamená nejvyšší náraz z celých deseti minut.
+
+Odkud fouká podle ČHMÚ a podle stanice (podíl hodin; jen když ČHMÚ měří aspoň 2 m/s a stanice aspoň 0,5 m/s). Když stanice ukazuje skoro jen dva protilehlé směry, vítr u ní usměrňuje překážka (hrana lesa, stěna domu):
+
+| Směr | ČHMÚ | Stanice |
+|---|---|---|
+| S | 5 % | 0 % |
+| SV | 24 % | 19 % |
+| V | 2 % | 11 % |
+| JV | 0 % | 0 % |
+| J | 1 % | 0 % |
+| JZ | 27 % | 67 % |
+| Z | 37 % | 2 % |
+| SZ | 3 % | 0 % |
+
+Co ukáže stanice, když ČHMÚ naměří silný náraz (m/s):
+
+| Náraz ČHMÚ | Hodin | Stanice: typicky | Stanice: 80 % případů | Stanice: nejvíc |
+|---|---|---|---|---|
+| 8–11 | 848 | 6,5 | 3,6–8,7 | 13,4 |
+| 11–14 | 235 | 8,7 | 6,1–10,7 | 16,8 |
+| 14–17 | 46 | 10,4 | 7,4–12,7 | 19,4 |
+| 17 a víc | 9 | 11,1 | 8,8–14,2 | 14,2 |
+
+Rozdíl teploty stanice − ČHMÚ podle denní doby (°C, hodiny v UTC; SEČ = UTC + 1, letní čas = UTC + 2):
+
+| Období | 00 h | 03 h | 06 h | 09 h | 12 h | 15 h | 18 h | 21 h | Průměr |
+|---|---|---|---|---|---|---|---|---|---|
+| léto (V–IX) | 2,3 | 2,1 | −0,6 | −1,5 | −1,2 | −0,4 | 1,2 | 2,6 | 0,6 |
+| zima (XI–III) | 0,9 | 0,8 | 0,7 | −0,5 | −0,7 | 0,2 | 1,1 | 1,0 | 0,4 |
+| celé období | 1,7 | 1,5 | 0,1 | −1,1 | −1,0 | −0,1 | 1,2 | 1,9 | 0,5 |
+
+Srážky po měsících (mm, jen hodiny, kdy měřily obě stanice; před vyřazením vadných měsíců):
+
+| Měsíc | ČHMÚ | Stanice | Stanice / ČHMÚ |
+|---|---|---|---|
+| 12/2025 | 11 | 0 | 2 % |
+| 1/2026 | 24 | 13 | 54 % |
+| 2/2026 | 43 | 31 | 72 % |
+| 3/2026 | 9 | 6 | 67 % |
+| 4/2026 | 0 | 0 | – |
+| 5/2026 | 84 | 52 | 62 % |
+| 6/2026 | 104 | 103 | 99 % |
+| 7/2026 | 45 | 37 | 83 % |
+| 8/2026 | 63 | 56 | 89 % |
+| 9/2026 | 29 | 28 | 97 % |
+| 10/2026 | 24 | 22 | 89 % |
+| 11/2026 | 22 | 22 | 101 % |
+
+
+---
+
 # Frymburk – wake: modely proti vlastní stanici
 
 Období: 21. 12. 2025 až 16. 11. 2026. Měřítko: vlastní stanice GARNI, hodinové hodnoty po vyřazení vadných úseků. Časy v UTC.
@@ -351,6 +423,19 @@ Vítr podle směru (jen hodiny, kdy ČHMÚ měřil aspoň 2 m/s; směr podle ČH
 | **všechny směry** | 2687 | 3,5 | 1,4 | 39 % | 7,3 | 3,4 | 47 % |
 
 Nárazy stanice jsou podhodnocené i tím, že se ukládá jedna okamžitá hodnota za 5 minut, kdežto ČHMÚ zaznamená nejvyšší náraz z celých deseti minut.
+
+Odkud fouká podle ČHMÚ a podle stanice (podíl hodin; jen když ČHMÚ měří aspoň 2 m/s a stanice aspoň 0,5 m/s). Když stanice ukazuje skoro jen dva protilehlé směry, vítr u ní usměrňuje překážka (hrana lesa, stěna domu):
+
+| Směr | ČHMÚ | Stanice |
+|---|---|---|
+| S | 5 % | 11 % |
+| SV | 25 % | 16 % |
+| V | 2 % | 1 % |
+| JV | 1 % | 2 % |
+| J | 6 % | 14 % |
+| JZ | 31 % | 22 % |
+| Z | 28 % | 31 % |
+| SZ | 2 % | 3 % |
 
 Co ukáže stanice, když ČHMÚ naměří silný náraz (m/s):
 
