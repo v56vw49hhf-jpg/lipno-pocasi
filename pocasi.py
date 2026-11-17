@@ -50,7 +50,8 @@ SITES = {
         "lat": 48.660, "lon": 14.171, "elev": 735,
         "chmi": None,
         "calib": "cerna",              # bez čerstvých dat z vlastní stanice se kalibruje podle Černé
-        "wu": None,                    # doplnit ID, až bude stanice Wake Frymburk na Weather Underground
+        "wu": "IFRYMB21",              # Wake Frymburk na Weather Underground (přeposílá ProWeatherLive)
+        "wu_from": "2026-11-17 22:00", # první platná hodina (UTC); předtím pod tímto ID krátce chodila data lanového parku
         "own": ("T",),                 # co se smí kalibrovat podle vlastní stanice (vítr ne: čidlo je v závětří)
     },
 }
@@ -490,6 +491,7 @@ def station_update(key, start=None, end=None, backfill=False):
     """Hodinová data vlastní stanice: uložená v repozitáři + doplnění z Weather Underground."""
     df = station_load(key)
     sid = SITES[key].get("wu")
+    wu_from = pd.Timestamp(SITES[key]["wu_from"]) if SITES[key].get("wu_from") else None
     if not sid or not os.environ.get("WU_API_KEY", "").strip():
         log("  %s: uložených hodin %d, Weather Underground se nedotazuji (%s)"
             % (key, len(df), "chybí ID stanice" if not sid else "chybí WU_API_KEY"))
@@ -502,12 +504,24 @@ def station_update(key, start=None, end=None, backfill=False):
             if len(df):
                 cnt = pd.Series(1, index=df.index[df["T"].notna()]).groupby(lambda t: t.date()).sum()
                 have = set(cnt[cnt >= 20].index)
-            d, n = start, 0
+            # dny starší než 10 dní stačí zkontrolovat jednou (historie na WU se už nemění)
+            seen_path = os.path.join(STATION_DIR, key, "zkontrolovane_dny.txt")
+            seen = set(open(seen_path, encoding="utf-8").read().split()) if os.path.exists(seen_path) else set()
+            old = dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=10)
+            d, n, fresh = start, 0, []
+            if wu_from is not None:
+                d = max(d, wu_from.date())
             while d <= end and n < 450:
-                if d not in have:
+                if d not in have and d.isoformat() not in seen:
                     new.append(wu_to_hourly(wu_get("/history/hourly", stationId=sid, date=d.strftime("%Y%m%d"))))
                     n += 1
+                    if d < old:
+                        fresh.append(d.isoformat())
                 d += dt.timedelta(days=1)
+            if fresh:
+                os.makedirs(os.path.join(STATION_DIR, key), exist_ok=True)
+                with open(seen_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(sorted(seen | set(fresh))) + "\n")
             log("  %s: doplněno dní z Weather Underground: %d" % (key, n))
     except ApiError as e:
         log("  %s: %s" % (key, e))
@@ -517,6 +531,8 @@ def station_update(key, start=None, end=None, backfill=False):
         return df
     add = pd.concat(new)
     add = add[add.index <= pd.Timestamp(dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))]   # bez rozdělané hodiny
+    if wu_from is not None:
+        add = add[add.index >= wu_from]
     if not len(add):
         return df
     merged = pd.concat([df, add]) if len(df) else add
