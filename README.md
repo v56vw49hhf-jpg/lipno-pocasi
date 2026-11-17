@@ -9,6 +9,7 @@ Skript nevyrábí nový fyzikální model. Bere předpovědi zhruba osmnácti ex
 | Soubor | K čemu |
 |---|---|
 | `pocasi.py` | celý výpočet |
+| `pwl_export.py` | převod exportu z ProWeatherLive (CSV po 5 minutách) na hodinová data |
 | `.github/workflows/pocasi.yml` | spouštění na GitHub Actions |
 | `out/verifikace.md` | zpětné vyhodnocení: jak se které modely trefovaly a co přinese směs |
 | `out/skill.json` | totéž strojově; odsud si předpověď bere zvolený způsob kalibrace |
@@ -22,7 +23,7 @@ Skript nevyrábí nový fyzikální model. Bere předpovědi zhruba osmnácti ex
 Actions → Lipno pocasi → Run workflow:
 
 - `forecast`: aktuální předpověď (asi 2 minuty)
-- `verify`: zpětné vyhodnocení od zadaného data (asi 8 minut)
+- `verify`: zpětné vyhodnocení od zadaného data (10 až 20 minut)
 - `both`: obojí
 
 Pravidelné spouštění je v souboru workflow připravené, ale zakomentované.
@@ -41,9 +42,12 @@ Pravidelné spouštění je v souboru workflow připravené, ale zakomentované.
 ## Vlastní stanice
 
 - Lanový park (terasa): Weather Underground `IERNVP8`. Po doplnění `WU_API_KEY` se při `verify` stáhne historie a při každém běhu posledních 7 dní.
-- Wake Frymburk: na Weather Underground zatím není. Po založení zařízení doplnit jeho ID do `SITES["frymburk"]["wu"]` v `pocasi.py`.
-- Při `verify` se pro každou stanici s aspoň 45 dny dat spočítá vlastní vyhodnocení modelů a porovnání se stanicí ČHMÚ (vítr podle směru, teplota podle denní doby, srážky po měsících).
-- Předpověď pro Frymburk se kalibruje podle vlastní stanice, pokud má data mladší než 4 dny; jinak podle ČHMÚ v Černé.
+- Wake Frymburk: na Weather Underground zatím není. Po založení zařízení doplnit jeho ID do `SITES["frymburk"]["wu"]` v `pocasi.py`. Historie od 11/2024 je v `data/pwl_frymburk.csv`.
+- Export z ProWeatherLive (Settings → Devices → zařízení → Export Data) se převede takto:
+  `python pwl_export.py EXPORT.csv data/pwl_frymburk.csv` (pro lanový park `data/pwl_cerna.csv`).
+- Kontrola dat (při každém běhu): vyřadí se úseky, kdy čidlo neposílalo data, kdy stál anemometr (24 hodin skoro samé nuly, nebo nula při větru na stanici ČHMÚ) a měsíce, kdy srážkoměr naměřil méně než pětinu toho co ČHMÚ.
+- Vítr a nárazy se vždy kalibrují podle stanice ČHMÚ (volné prostranství, 10 m nad zemí). Vlastní stanice jsou v závětří a slouží jen k porovnání: `verifikace.md` ukazuje, kolik stanice ukáže při jakém větru na ČHMÚ.
+- Teplota ve Frymburku: `verify` porovná kalibraci podle vlastní stanice s kalibrací převzatou z Černé a rozhodne (`out/skill.json`, `targets.frymburk.transfer.T.use`): `all` = podle vlastní stanice, `night` = jen v noci (čidlo se na slunci přehřívá), `none` = stanice kalibraci nezlepší. Data starší než 14 dní se nepoužijí.
 
 ## Co chybí
 

@@ -43,6 +43,7 @@ SITES = {
         "chmi": "0-203-0-11547",      # stanice ČHMÚ Černá v Pošumaví
         "calib": "cerna",
         "wu": "IERNVP8",               # vlastní stanice na Weather Underground (terasa u lanového parku)
+        "own": (),                     # stanice ČHMÚ je 500 m odtud, vlastní stanice se jen porovnává
     },
     "frymburk": {
         "name": "Frymburk – wake",
@@ -50,6 +51,7 @@ SITES = {
         "chmi": None,
         "calib": "cerna",              # bez čerstvých dat z vlastní stanice se kalibruje podle Černé
         "wu": None,                    # doplnit ID, až bude stanice Wake Frymburk na Weather Underground
+        "own": ("T",),                 # co se smí kalibrovat podle vlastní stanice (vítr ne: čidlo je v závětří)
     },
 }
 
@@ -87,6 +89,7 @@ VARS = {
 LEADS = [0, 1, 2, 3, 5]          # o kolik dní dřív byla předpověď vydaná
 EVAL_LEADS = [1, 2, 3, 5]
 WINDOW = 30                      # dní pro klouzavou kalibraci (výchozí)
+OWN_MAX_AGE = 14                 # jak stará smí být data z vlastní stanice, aby se podle nich kalibrovalo (dny)
 MINP = 7
 SHRINK = 0.8                     # opravu bereme jen z 80 %, zbytek je šum
 # zkoušené způsoby kalibrace: (režim, okno ve dnech)
@@ -439,7 +442,7 @@ def wu_to_hourly(obs_list):
         if not m or not o.get("obsTimeUtc"):
             continue
         ws, wg = m.get("windspeedAvg"), m.get("windgustHigh")
-        rows.append({"t": o["obsTimeUtc"], "loc": str(o.get("obsTimeLocal", ""))[:10], "T": m.get("tempAvg"),
+        rows.append({"t": o["obsTimeUtc"], "loc": str(o.get("obsTimeLocal", ""))[:10], "tavg": m.get("tempAvg"),
                      "W": None if ws is None else ws * k, "G": None if wg is None else wg * k,
                      "ptot": m.get("precipTotal"), "D": o.get("winddirAvg")})
     if not rows:
@@ -447,11 +450,20 @@ def wu_to_hourly(obs_list):
     df = pd.DataFrame(rows)
     df["t"] = pd.to_datetime(df["t"], utc=True).dt.tz_localize(None).dt.ceil("h")
     df = df.drop_duplicates("t", keep="last").sort_values("t")
-    for c in ("T", "W", "G", "ptot", "D"):
+    for c in ("tavg", "W", "G", "ptot", "D"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
     d = df.groupby("loc")["ptot"].diff()
     df["P"] = d.where(d.notna(), df["ptot"]).clip(lower=0)
-    return df.set_index("t")[STATION_COLS]
+    df = df.set_index("t")
+    # Weather Underground dává hodinový průměr teploty, modely i ČHMÚ hodnotu v celou hodinu.
+    # Hodnota v celou hodinu ~ průměr dvou sousedních hodinových průměrů (jinak ráno a večer sedí o 0,6 °C vedle).
+    t = df["tavg"]
+    nxt = t.reindex(t.index + pd.Timedelta(hours=1))
+    nxt.index = t.index
+    prv = t.reindex(t.index - pd.Timedelta(hours=1))
+    prv.index = t.index
+    df["T"] = (0.5 * (t + nxt)).fillna(t + 0.5 * (t - prv)).fillna(t)
+    return df[STATION_COLS]
 
 
 def station_load(key):
@@ -514,9 +526,103 @@ def station_update(key, start=None, end=None, backfill=False):
     return merged
 
 
-def station_vs_chmi(name, st, ref):
+def sun_elev(idx, lat, lon):
+    """Výška slunce nad obzorem ve stupních (přibližně; stačí na rozlišení dne a noci). idx v UTC."""
+    hours = idx.hour.to_numpy() + idx.minute.to_numpy() / 60.0
+    g = 2 * np.pi * (idx.dayofyear.to_numpy() - 1 + hours / 24.0) / 365.25
+    decl = (0.006918 - 0.399912 * np.cos(g) + 0.070257 * np.sin(g) - 0.006758 * np.cos(2 * g)
+            + 0.000907 * np.sin(2 * g) - 0.002697 * np.cos(3 * g) + 0.00148 * np.sin(3 * g))
+    eqt = 229.18 * (0.000075 + 0.001868 * np.cos(g) - 0.032077 * np.sin(g) - 0.014615 * np.cos(2 * g) - 0.040849 * np.sin(2 * g))
+    ha = np.deg2rad(15.0 * (hours + (eqt + 4.0 * lon) / 60.0 - 12.0))
+    la = np.deg2rad(lat)
+    return np.rad2deg(np.arcsin(np.sin(la) * np.sin(decl) + np.cos(la) * np.cos(decl) * np.cos(ha)))
+
+
+NIGHT_ELEV = -3.0     # slunce aspoň 3° pod obzorem: čidlo už není ohřáté sluncem
+DAY_ELEV = 10.0
+NIGHT_MINP = 3        # v létě je noc krátká, na noční kalibraci stačí méně hodin
+
+
+def _runs(mask):
+    """Souvislé úseky True v hodinové řadě -> [(začátek, konec, počet hodin)]."""
+    m = mask.fillna(False).to_numpy(dtype=bool)
+    if not m.any():
+        return []
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], m.astype(np.int8), [0]))))
+    return [(mask.index[i], mask.index[j - 1], int(j - i)) for i, j in zip(edges[::2], edges[1::2])]
+
+
+def _fmt_runs(runs, top=4, min_hours=12):
+    runs = [r for r in runs if r[2] >= min_hours]
+    runs = sorted(sorted(runs, key=lambda r: -r[2])[:top], key=lambda r: r[0])
+    out = []
+    for a, b, _ in runs:
+        out.append(a.strftime("%-d. %-m. %Y") if a.date() == b.date()
+                   else "%s – %s" % (a.strftime("%-d. %-m."), b.strftime("%-d. %-m. %Y")))
+    return ", ".join(out)
+
+
+def station_qc(st, ref=None):
+    """
+    Vyřadí zjevně vadná hodinová data vlastní stanice. ref = hodinová data stanice ČHMÚ (když jsou).
+    Vrací (očištěná data, seznam poznámek pro zprávu).
+    """
+    notes = []
+    if st is None or not len(st):
+        return st, notes
+    full = pd.date_range(st.index.min(), st.index.max(), freq="h")
+    s = st.reindex(full).astype(float).copy()
+
+    # 1) čidlo neposílá data: konzole opakuje poslední hodnoty
+    same = (s["T"].diff() == 0) & (s["W"].diff().fillna(0) == 0) & (s["G"].diff().fillna(0) == 0)
+    n = same.groupby((~same).cumsum()).transform("sum")
+    frozen = same & (n >= 6)
+    if frozen.any():
+        s.loc[frozen, STATION_COLS] = np.nan
+        notes.append("čidlo neposílalo data (opakovaly se stejné hodnoty): %d h%s"
+                     % (int(frozen.sum()), (", hlavně " + _fmt_runs(_runs(frozen))) if _fmt_runs(_runs(frozen)) else ""))
+
+    # 2) anemometr stojí: během 24 hodin je aspoň 90 % hodin úplně bez větru
+    w = s["W"]
+    valid = w.notna()
+    zero = (w <= 0.05)
+    zc = zero.astype(float).rolling(25, center=True, min_periods=1).sum()
+    vc = valid.astype(float).rolling(25, center=True, min_periods=1).sum()
+    stuck = (vc >= 18) & (zc >= 0.9 * vc)
+    stuck = (stuck | (zero & stuck.groupby((zero != zero.shift()).cumsum()).transform("any"))) & valid
+
+    # 3) stanice ukazuje nulu aspoň 6 hodin v kuse, i když na stanici ČHMÚ fouká
+    if ref is not None and "W" in ref:
+        rw = ref["W"].reindex(full)
+        grp = (zero != zero.shift()).cumsum()
+        g = pd.DataFrame({"rw": rw[zero], "grp": grp[zero]})
+        if len(g):
+            a = g.groupby("grp")["rw"].agg(["size", "count", "mean", "min"])
+            bad = a[(a["size"] >= 6) & (a["count"] >= 0.8 * a["size"]) & (a["mean"] >= 3.0) & (a["min"] >= 2.0)].index
+            stuck = stuck | (zero & grp.isin(bad))
+    if stuck.any():
+        s.loc[stuck, ["W", "G", "D"]] = np.nan
+        txt = _fmt_runs(_runs(stuck), min_hours=24)
+        notes.append("vítr vyřazen (anemometr stál nebo namrzl): %d h%s" % (int(stuck.sum()), (", hlavně " + txt) if txt else ""))
+
+    # 4) srážkoměr: měsíce, kdy stanice naměřila méně než pětinu toho co ČHMÚ
+    if ref is not None and "P" in ref:
+        both = pd.DataFrame({"s": s["P"], "c": ref["P"].reindex(full)}).dropna()
+        if len(both):
+            g = both.groupby(both.index.to_period("M")).agg(s=("s", "sum"), c=("c", "sum"), n=("s", "size"))
+            badm = g[(g["n"] >= 200) & (g["c"] >= 20) & (g["s"] < 0.2 * g["c"])].index
+            if len(badm):
+                s.loc[s.index.to_period("M").isin(badm), "P"] = np.nan
+                notes.append("srážky vyřazeny za měsíce %s (stanice naměřila méně než pětinu úhrnu ČHMÚ: ucpaný srážkoměr, v zimě sníh)"
+                             % ", ".join("%d/%d" % (x.month, x.year) for x in badm))
+    return s.dropna(how="all"), notes
+
+
+def station_vs_chmi(name, st, ref, raw=None, notes=None):
     """Porovnání vlastní stanice se stanicí ČHMÚ: vítr podle směru, teplota podle denní doby, srážky po měsících."""
     md = ["## %s: vlastní stanice proti stanici ČHMÚ v Černé" % name, ""]
+    if notes:
+        md += ["Kontrola dat stanice:", ""] + ["- " + x for x in notes] + [""]
     j = st.join(ref, how="inner", lsuffix="_s", rsuffix="_c")
     if len(j) < 24 * 30:
         return md + ["Málo společných hodin.", ""]
@@ -531,11 +637,30 @@ def station_vs_chmi(name, st, ref):
                 gc = x["G_c"].mean()
                 rows.append([DIRS[k], str(len(x)), cz(x["W_c"].mean(), 1), cz(x["W_s"].mean(), 1),
                              cz(100 * x["W_s"].mean() / x["W_c"].mean(), 0) + " %",
+                             cz(gc, 1), cz(x["G_s"].mean(), 1),
                              (cz(100 * x["G_s"].mean() / gc, 0) + " %") if gc > 0 else "–"])
+        if len(jj) >= 40:
+            gc = jj["G_c"].mean()
+            rows.append(["**všechny směry**", str(len(jj)), cz(jj["W_c"].mean(), 1), cz(jj["W_s"].mean(), 1),
+                         cz(100 * jj["W_s"].mean() / jj["W_c"].mean(), 0) + " %", cz(gc, 1), cz(jj["G_s"].mean(), 1),
+                         (cz(100 * jj["G_s"].mean() / gc, 0) + " %") if gc > 0 else "–"])
         if rows:
-            md += ["Vítr podle směru (jen hodiny, kdy ČHMÚ měřil aspoň 2 m/s; směr podle ČHMÚ):", "",
-                   md_table(["Vítr od", "Hodin", "ČHMÚ (m/s)", "Stanice (m/s)", "Průměr: stanice / ČHMÚ",
-                             "Nárazy: stanice / ČHMÚ"], rows), ""]
+            md += ["Vítr podle směru (jen hodiny, kdy ČHMÚ měřil aspoň 2 m/s; směr podle ČHMÚ; průměr a nejvyšší náraz za hodinu v m/s):", "",
+                   md_table(["Vítr od", "Hodin", "Průměr ČHMÚ", "Průměr stanice", "Stanice / ČHMÚ",
+                             "Náraz ČHMÚ", "Náraz stanice", "Stanice / ČHMÚ"], rows), "",
+                   "Nárazy stanice jsou podhodnocené i tím, že se ukládá jedna okamžitá hodnota za 5 minut, "
+                   "kdežto ČHMÚ zaznamená nejvyšší náraz z celých deseti minut.", ""]
+        # silný vítr: co ukazuje stanice, když ČHMÚ hlásí silné nárazy
+        gg = j[j["G_c"].notna() & j["G_s"].notna()]
+        rows = []
+        for lo, hi in ((8, 11), (11, 14), (14, 17), (17, 99)):
+            x = gg[(gg["G_c"] >= lo) & (gg["G_c"] < hi)]
+            if len(x) >= 8:
+                rows.append([("%d–%d" % (lo, hi)) if hi < 99 else ("%d a víc" % lo), str(len(x)), cz(x["G_s"].median(), 1),
+                             "%s–%s" % (cz(x["G_s"].quantile(0.1), 1), cz(x["G_s"].quantile(0.9), 1)), cz(x["G_s"].max(), 1)])
+        if rows:
+            md += ["Co ukáže stanice, když ČHMÚ naměří silný náraz (m/s):", "",
+                   md_table(["Náraz ČHMÚ", "Hodin", "Stanice: typicky", "Stanice: 80 % případů", "Stanice: nejvíc"], rows), ""]
     if "T_s" in j and "T_c" in j:
         d = (j["T_s"] - j["T_c"]).dropna()
         hrs = [0, 3, 6, 9, 12, 15, 18, 21]
@@ -544,17 +669,20 @@ def station_vs_chmi(name, st, ref):
                       ("zima (XI–III)", d[(d.index.month >= 11) | (d.index.month <= 3)]), ("celé období", d)):
             if len(x) > 200:
                 g = x.groupby(x.index.hour).mean()
-                rows.append([nm] + [cz(float(g.get(h, np.nan)), 1) for h in hrs])
+                rows.append([nm] + [cz(float(g.get(h, np.nan)), 1) for h in hrs] + [cz(float(x.mean()), 1)])
         if rows:
-            md += ["Rozdíl teploty stanice − ČHMÚ podle denní doby (°C, hodiny v UTC):", "",
-                   md_table(["Období"] + ["%02d h" % h for h in hrs], rows), ""]
-    if "P_s" in j and "P_c" in j:
-        both = j[["P_s", "P_c"]].dropna()
+            md += ["Rozdíl teploty stanice − ČHMÚ podle denní doby (°C, hodiny v UTC; SEČ = UTC + 1, letní čas = UTC + 2):", "",
+                   md_table(["Období"] + ["%02d h" % h for h in hrs] + ["Průměr"], rows), ""]
+    pr = raw if raw is not None else st
+    if "P" in pr and "P" in ref:
+        both = pd.DataFrame({"P_s": pr["P"], "P_c": ref["P"]}).dropna()
         if len(both):
             g = both.groupby([both.index.year, both.index.month]).sum()
-            rows = [["%d/%d" % (mm, yy), cz(float(r["P_c"]), 0), cz(float(r["P_s"]), 0)] for (yy, mm), r in g.iterrows()]
-            md += ["Srážky po měsících (mm, jen hodiny, kdy měřily obě stanice):", "",
-                   md_table(["Měsíc", "ČHMÚ", "Stanice"], rows), ""]
+            rows = [["%d/%d" % (mm, yy), cz(float(r["P_c"]), 0), cz(float(r["P_s"]), 0),
+                     (cz(100 * float(r["P_s"]) / float(r["P_c"]), 0) + " %") if float(r["P_c"]) >= 5 else "–"]
+                    for (yy, mm), r in g.iterrows()]
+            md += ["Srážky po měsících (mm, jen hodiny, kdy měřily obě stanice; před vyřazením vadných měsíců):", "",
+                   md_table(["Měsíc", "ČHMÚ", "Stanice", "Stanice / ČHMÚ"], rows), ""]
     return md
 
 
@@ -577,23 +705,30 @@ def _roll(a, w):
     return out
 
 
-def rolling_blend(E, O, lead, kind, mode="mean", window=WINDOW, shrink=SHRINK, minp=MINP):
+def rolling_blend(E, O, lead, kind, mode="mean", window=WINDOW, shrink=SHRINK, minp=MINP, Ecal=None, Ocal=None):
     """
     Klouzavá kalibrace jen z minulosti.
     E: čas × model (předpovědi vydané o `lead` dní dřív), O: měření.
     kind: "add" (teplota) nebo "mul" (vítr). mode: "none" | "mean" | "hod3" | "ratio".
+    Ecal, Ocal: když jsou zadané, opravy i váhy se počítají z nich (předpovědi a měření
+    na jiném místě) a jen se použijí na E. Tak se dá zjistit, jak by dopadla kalibrace převzatá odjinud.
     Vrací (opravené předpovědi, směs).
     """
     idx = E.index
-    Ov = O.reindex(idx).to_numpy(dtype=float)
     Ev = E.to_numpy(dtype=float)
+    if Ecal is None:
+        Cv, Ov = Ev, O.reindex(idx).to_numpy(dtype=float)
+    else:
+        Cv = Ecal.reindex(index=idx, columns=E.columns).to_numpy(dtype=float)
+        Ov = Ocal.reindex(idx).to_numpy(dtype=float)
     day0 = idx.min().normalize()
     dpos = ((idx.normalize() - day0) / pd.Timedelta(days=1)).astype(int).to_numpy()
     hod = idx.hour.to_numpy()
     nd = int(dpos.max()) + 1
     nm = Ev.shape[1]
     shift = lead + 1
-    Fc = np.full_like(Ev, np.nan)
+    Fc = np.full_like(Ev, np.nan)       # opravené předpovědi pro cílové místo
+    Fk = np.full_like(Ev, np.nan)       # opravené předpovědi tam, kde se kalibruje (pro váhy)
     if mode == "hod3":
         nb, bins = 8, hod // 3
     else:
@@ -601,10 +736,11 @@ def rolling_blend(E, O, lead, kind, mode="mean", window=WINDOW, shrink=SHRINK, m
     need = minp * (24 // nb)
     with np.errstate(invalid="ignore", divide="ignore"):
         for j in range(nm):
-            e = Ev[:, j]
+            e = Cv[:, j]
             ok = ~np.isnan(e) & ~np.isnan(Ov)
             if mode == "none":
-                Fc[:, j] = e
+                Fc[:, j] = Ev[:, j]
+                Fk[:, j] = e
             elif kind == "add":
                 S = np.zeros((nd, nb))
                 C = np.zeros((nd, nb))
@@ -616,7 +752,8 @@ def rolling_blend(E, O, lead, kind, mode="mean", window=WINDOW, shrink=SHRINK, m
                 bsh = np.full_like(bias, np.nan)
                 if nd > shift:
                     bsh[shift:] = bias[:-shift]
-                Fc[:, j] = e - bsh[dpos, bins]
+                Fc[:, j] = Ev[:, j] - bsh[dpos, bins]
+                Fk[:, j] = e - bsh[dpos, bins]
             else:
                 SF = np.zeros(nd)
                 SO = np.zeros(nd)
@@ -632,8 +769,9 @@ def rolling_blend(E, O, lead, kind, mode="mean", window=WINDOW, shrink=SHRINK, m
                 rsh = np.full(nd, np.nan)
                 if nd > shift:
                     rsh[shift:] = ratio[:-shift]
-                Fc[:, j] = e * rsh[dpos]
-        err2 = (Fc - Ov[:, None]) ** 2
+                Fc[:, j] = Ev[:, j] * rsh[dpos]
+                Fk[:, j] = e * rsh[dpos]
+        err2 = (Fk - Ov[:, None]) ** 2
         S2 = np.zeros((nd, nm))
         C2 = np.zeros((nd, nm))
         for j in range(nm):
@@ -750,7 +888,10 @@ def season_mask(idx, name):
 # Režim: zpětné vyhodnocení
 # --------------------------------------------------------------------------
 
-def verify_target(title, intro, obs, fc, start, end, station_id):
+def verify_target(title, intro, obs, fc, start, end, station_id, vars_=("T", "W", "G"), transfer=None, site=None):
+    """transfer = (předpovědi, měření, způsoby kalibrace, název) referenčního místa: porovná se,
+    jestli je lepší kalibrovat podle tohoto měření, nebo kalibraci převzít z referenčního místa.
+    site (kvůli výšce slunce) je potřeba pro oddělené vyhodnocení noci."""
     md = []
     skill = {"period": [str(start), str(end)], "station": station_id, "models": {}, "blend": {}, "method": {}}
     md.append("# " + title)
@@ -762,7 +903,7 @@ def verify_target(title, intro, obs, fc, start, end, station_id):
     md.append("")
 
     summary_rows = []
-    for vk in ("T", "W", "G"):
+    for vk in vars_:
         base, kind, unit, title = VARS[vk]
         o = obs[vk] if vk in obs else pd.Series(dtype=float)
         if o.notna().sum() < 200:
@@ -900,6 +1041,79 @@ def verify_target(title, intro, obs, fc, start, end, station_id):
             md.append(md_table(["Sezóna", "Předstih", "Směs", "Nejlepší jednotlivý model", "Hodin"], seas))
             md.append("")
 
+        if transfer is not None and base:
+            fc_ref, obs_ref, meth_ref, ref_name = transfer
+            mref = meth_ref.get(vk, DEFAULT_METHOD[vk])
+            split = (vk == "T" and site is not None)
+            trows, tinfo = [], {}
+            for L in EVAL_LEADS:
+                Er = fc_ref.get((vk, L), pd.DataFrame())
+                if L not in base or Er.empty or vk not in obs_ref:
+                    continue
+                E, Eb, oo = base[L]
+                _, bt = rolling_blend(Eb, oo, L, kind, mode=mref[0], window=mref[1], Ecal=Er, Ocal=obs_ref[vk])
+                msk = masks[L] & bt.notna()
+                nn = int(msk.sum())
+                if nn < 300:
+                    continue
+                own_mae = float((res[best_v][L][msk] - oo[msk]).abs().mean())
+                tr_mae = float((bt[msk] - oo[msk]).abs().mean())
+                info = {"own": own_mae, "transfer": tr_mae, "n": nn}
+                row = ["+%d d" % L, cz(own_mae, 2), cz(tr_mae, 2)]
+                if split:
+                    night = pd.Series(sun_elev(Eb.index, site["lat"], site["lon"]) < NIGHT_ELEV, index=Eb.index)
+                    _, bn = rolling_blend(Eb, oo.where(night), L, kind, mode=best_v[0], window=best_v[1], minp=NIGHT_MINP)
+                    mn = msk & night & bn.notna()
+                    if int(mn.sum()) >= 150:
+                        info.update({"own_night": float((bn[mn] - oo[mn]).abs().mean()),
+                                     "transfer_night": float((bt[mn] - oo[mn]).abs().mean()),
+                                     "transfer_night_bias": float((bt[mn] - oo[mn]).mean()), "n_night": int(mn.sum())})
+                    row += [cz(info.get("own_night", np.nan), 2), cz(info.get("transfer_night", np.nan), 2),
+                            cz(info.get("transfer_night_bias", np.nan), 2)]
+                row.append(str(nn))
+                trows.append(row)
+                tinfo[str(L)] = info
+            if trows:
+                o_m = float(np.mean([x["own"] for x in tinfo.values()]))
+                t_m = float(np.mean([x["transfer"] for x in tinfo.values()]))
+                tr = {"by_lead": tinfo, "own_better": bool(o_m < 0.98 * t_m), "use": "all" if o_m < 0.98 * t_m else "none"}
+                verdict = ("kalibrace podle vlastní stanice je lepší, předpověď ji použije" if tr["use"] == "all"
+                           else "vlastní stanice kalibraci nezlepší, zůstává %s" % ref_name)
+                if split:
+                    d = (obs[vk] - obs_ref[vk]).dropna()
+                    el = sun_elev(d.index, site["lat"], site["lon"])
+                    dd, dn = d[el > DAY_ELEV], d[el < NIGHT_ELEV]
+                    if len(dd) >= 200 and len(dn) >= 200:
+                        tr["day_diff"], tr["night_diff"] = float(dd.mean()), float(dn.mean())
+                        tr["day_excess"] = tr["day_diff"] - tr["night_diff"]
+                    nights = [x for x in tinfo.values() if "own_night" in x]
+                    if nights:
+                        on = float(np.mean([x["own_night"] for x in nights]))
+                        tn = float(np.mean([x["transfer_night"] for x in nights]))
+                        tr["night_better"] = bool(on < 0.98 * tn)
+                    if tr.get("day_excess", 0.0) >= 1.0:
+                        tr["use"] = "night" if tr.get("night_better") else "none"
+                        verdict = ("přes den stanice ukazuje proti ČHMÚ o %s °C víc než v noci, čidlo se tedy na slunci přehřívá "
+                                   "a denní hodnoty se ke kalibraci nehodí; %s"
+                                   % (cz(tr["day_excess"], 1),
+                                      "noční hodnoty kalibraci zlepšují, předpověď je použije pro noc" if tr["use"] == "night"
+                                      else "ani noční hodnoty kalibraci nezlepší, zůstává %s" % ref_name))
+                skill.setdefault("transfer", {})[vk] = tr
+                md.append("**Vyplatí se kalibrovat podle vlastní stanice?** Chyba směsi proti vlastní stanici, "
+                          "když se opravy a váhy modelů počítají z vlastní stanice, nebo se převezmou z %s:" % ref_name)
+                md.append("")
+                hdr = ["Předstih", "Vlastní stanice", "Převzato z %s" % ref_name]
+                if split:
+                    hdr += ["Jen noc: vlastní", "Jen noc: převzato", "Jen noc: odchylka převzaté"]
+                md.append(md_table(hdr + ["Hodin"], trows))
+                md.append("")
+                if "day_excess" in tr:
+                    md.append("Stanice proti ČHMÚ: přes den (slunce nad 10°) v průměru %s °C, v noci %s °C."
+                              % (cz(tr["day_diff"], 1), cz(tr["night_diff"], 1)))
+                    md.append("")
+                md.append("Závěr: %s." % verdict)
+                md.append("")
+
         if vk == "T":
             E = fc.get(("T", 1), pd.DataFrame())
             top = [m for m in order if m in E.columns][:8]
@@ -996,23 +1210,32 @@ def run_verify(start, outdir):
         "Předpovědi: archiv Open-Meteo, vždy to, co model říkal 1, 2, 3 a 5 dní předem. Časy v UTC." % period,
         obs, fc, start, end, site["chmi"])
     skill["targets"] = {}
+    ref_method = {k: (v["mode"], int(v["window"])) for k, v in skill["method"].items()}
     for key, s_site in SITES.items():
         log("-- vlastní stanice: %s" % s_site["name"])
-        st = station_update(key, start, end, backfill=True)
-        if len(st):
-            st = st[(st.index >= pd.Timestamp(start)) & (st.index < pd.Timestamp(end) + pd.Timedelta(days=1))]
-        if not len(st) or st["T"].notna().sum() < 24 * 45:
+        raw = station_update(key, start, end, backfill=True)
+        if len(raw):
+            raw = raw[(raw.index >= pd.Timestamp(start)) & (raw.index < pd.Timestamp(end) + pd.Timedelta(days=1))]
+        st, notes = station_qc(raw, obs)
+        if st is None or not len(st) or st["T"].notna().sum() < 24 * 45:
             log("  málo dat, vynechávám")
             continue
-        s0 = max(start, st.index.min().date())
-        fcs = fc if key == "cerna" else fetch_previous_runs(s_site, s0, end)
-        m2, s2 = verify_target(
-            "%s: modely proti vlastní stanici" % s_site["name"],
-            "Období: %s až %s. Měřítko: vlastní stanice GARNI, hodinové hodnoty. Časy v UTC."
-            % (s0.strftime("%-d. %-m. %Y"), end.strftime("%-d. %-m. %Y")),
-            st, fcs, s0, end, s_site.get("wu") or "PWL")
-        md += ["", "---", ""] + m2 + [""] + station_vs_chmi(s_site["name"], st, obs)
-        skill["targets"][key] = s2
+        for x in notes:
+            log("  kontrola dat: " + x)
+        own = tuple(v for v in (s_site.get("own") or ()) if v in ("T", "W", "G"))
+        md += ["", "---", ""]
+        if own:
+            s0 = max(start, st[own[0]].first_valid_index().date())
+            fcs = fc if key == "cerna" else fetch_previous_runs(s_site, s0, end, var_keys=own + ("P",), leads=EVAL_LEADS)
+            m2, s2 = verify_target(
+                "%s: modely proti vlastní stanici" % s_site["name"],
+                "Období: %s až %s. Měřítko: vlastní stanice GARNI, hodinové hodnoty po vyřazení vadných úseků. Časy v UTC."
+                % (s0.strftime("%-d. %-m. %Y"), end.strftime("%-d. %-m. %Y")),
+                st, fcs, s0, end, s_site.get("wu") or "PWL", vars_=own, site=s_site,
+                transfer=None if key == "cerna" else (fc, obs, ref_method, "ČHMÚ Černá"))
+            md += m2 + [""]
+            skill["targets"][key] = s2
+        md += station_vs_chmi(s_site["name"], st, obs, raw=raw, notes=notes)
     if STATE["errors"]:
         md.append("## Co se nepodařilo načíst")
         md.append("")
@@ -1152,6 +1375,7 @@ def run_forecast(outdir):
     today = now.date()
     method = dict(DEFAULT_METHOD)
     by_target = {}
+    own_use = {}           # místo -> veličina -> "all" | "night" | "none" (ze zpětného vyhodnocení)
     try:
         with open(os.path.join(outdir, "skill.json"), encoding="utf-8") as f:
             sk = json.load(f)
@@ -1159,6 +1383,7 @@ def run_forecast(outdir):
             method[k] = (v["mode"], int(v["window"]))
         for tk, tv in (sk.get("targets") or {}).items():
             by_target[tk] = {k: (v["mode"], int(v["window"])) for k, v in (tv.get("method") or {}).items()}
+            own_use[tk] = {k: v.get("use") for k, v in (tv.get("transfer") or {}).items()}
     except (OSError, ValueError, KeyError, TypeError):
         pass
     log("  způsob kalibrace: %s %s" % (method, by_target))
@@ -1167,16 +1392,16 @@ def run_forecast(outdir):
     cal_site = SITES["cerna"]
     log("== Předpověď, vydáno %s UTC" % now.strftime("%Y-%m-%d %H:%M"))
 
-    def build(site_fc, obs_k, meth):
-        fc = fetch_previous_runs(site_fc, start, today, var_keys=("T", "W", "G"), leads=[1, 2, 3, 5])
+    def build(site_fc, obs_k, meth, var_keys=("T", "W", "G"), minp=MINP):
+        fc = fetch_previous_runs(site_fc, start, today, var_keys=tuple(var_keys), leads=[1, 2, 3, 5])
         cal, rm = {}, {}
-        for vk in ("T", "W", "G"):
+        for vk in var_keys:
             kind = VARS[vk][1]
             for L in (1, 2, 3, 5):
                 E = fc.get((vk, L), pd.DataFrame())
                 if E.empty or vk not in obs_k or obs_k[vk].notna().sum() == 0:
                     continue
-                c, rmse = current_calibration(E, obs_k[vk], kind, mode=meth[vk][0], window=meth[vk][1])
+                c, rmse = current_calibration(E, obs_k[vk], kind, mode=meth[vk][0], window=meth[vk][1], minp=minp)
                 cal[(vk, L)] = c
                 rm[(vk, L)] = rmse
         return cal, rm
@@ -1188,20 +1413,51 @@ def run_forecast(outdir):
     ncal = len(calib0.get(("T", 1), {}))
     log("  modelů s kalibrací (teplota, +1 den): %d" % ncal)
     per_site = {}
+    vnames = {"T": "teplota", "W": "vítr", "G": "nárazy"}
     for key, site in SITES.items():
-        per_site[key] = (calib0, rmse0, "stanice ČHMÚ Černá v Pošumaví")
-        st = station_update(key)
-        if key == "cerna" or not len(st) or st["T"].notna().sum() == 0:
+        per_site[key] = (calib0, rmse0, "stanice ČHMÚ Černá v Pošumaví", None)
+        raw = station_update(key)
+        own = [v for v in (site.get("own") or ()) if v in vnames]
+        if key == "cerna" or not own or raw is None or not len(raw):
             continue
-        if (now - st["T"].dropna().index.max()) > pd.Timedelta(days=4):
-            log("  %s: data z vlastní stanice jsou starší než 4 dny, kalibruji podle ČHMÚ" % key)
+        st, _ = station_qc(raw, obs)
+        use = {}
+        for vk in own:
+            if st is None or vk not in st or st[vk].notna().sum() == 0:
+                continue
+            how = own_use.get(key, {}).get(vk) or ("night" if vk == "T" else "none")
+            if (now - st[vk].dropna().index.max()) > pd.Timedelta(days=OWN_MAX_AGE):
+                log("  %s: %s z vlastní stanice je starší než %d dní, kalibruji podle ČHMÚ" % (key, vnames[vk], OWN_MAX_AGE))
+            elif how == "none":
+                log("  %s: %s podle vlastní stanice podle zpětného vyhodnocení nevychází líp, kalibruji podle ČHMÚ" % (key, vnames[vk]))
+            else:
+                use[vk] = how
+        if not use:
             continue
         meth = dict(method)
         meth.update(by_target.get(key, {}))
-        log("-- kalibrace podle vlastní stanice: %s" % site["name"])
-        c2, r2 = build(site, st, meth)
-        if len(c2.get(("T", 1), {})) >= 3:
-            per_site[key] = (c2, r2, "vlastní stanice")
+        log("-- kalibrace podle vlastní stanice: %s (%s)" % (site["name"], ", ".join("%s: %s" % (vnames[v], h) for v, h in use.items())))
+        stc = st.copy()
+        if use.get("T") == "night":
+            stc["T"] = stc["T"].where(sun_elev(stc.index, site["lat"], site["lon"]) < NIGHT_ELEV)
+        c2, r2 = build(site, stc, meth, var_keys=list(use), minp=NIGHT_MINP if "night" in use.values() else MINP)
+        cal, rm, done, night_cal = dict(calib0), dict(rmse0), [], None
+        for vk, how in use.items():
+            if len(c2.get((vk, 1), {})) < 3:
+                continue
+            if how == "night":
+                night_cal = {k: v for k, v in c2.items() if k[0] == vk}
+                done.append("teplota v noci")
+                continue
+            for L in (1, 2, 3, 5):
+                cal.pop((vk, L), None)
+                rm.pop((vk, L), None)
+                if (vk, L) in c2:
+                    cal[(vk, L)] = c2[(vk, L)]
+                    rm[(vk, L)] = r2[(vk, L)]
+            done.append(vnames[vk])
+        if done:
+            per_site[key] = (cal, rm, "%s podle vlastní stanice, ostatní podle stanice ČHMÚ Černá v Pošumaví" % " a ".join(done), night_cal)
     calib_errors = list(STATE["errors"])
     STATE["errors"] = []
 
@@ -1219,8 +1475,22 @@ def run_forecast(outdir):
         if len(per) < 2:
             md.append("## %s\n\nNepodařilo se načíst dost modelů.\n" % site["name"])
             continue
-        calib, blend_rmse, src = per_site[key]
+        calib, blend_rmse, src, night_cal = per_site[key]
         cal = apply_calibration(per, calib, now)
+        if night_cal:
+            # v noci (slunce pod obzorem) teplotu opravit podle vlastní stanice
+            C, W = cal["T"]
+            C2, W2 = apply_calibration(per, night_cal, now)["T"]
+            have = set()
+            for k, v in night_cal.items():
+                have |= set(v)
+            night = sun_elev(C.index, site["lat"], site["lon"]) < NIGHT_ELEV
+            for m in C.columns:
+                if m in have and m in C2.columns:
+                    sel = night & C2[m].reindex(C.index).notna().to_numpy()
+                    C.loc[sel, m] = C2[m].reindex(C.index)[sel]
+                    W.loc[sel, m] = W2[m].reindex(C.index)[sel]
+            cal["T"] = (C, W)
         Tm, Ts, Tn = wmean_std(*cal["T"])
         Wm, Ws, _ = wmean_std(*cal["W"])
         Gm, Gs, _ = wmean_std(*cal["G"])
@@ -1313,8 +1583,8 @@ def run_forecast(outdir):
 
     result["errors"] = STATE["errors"]
     result["calibration"] = {"%s+%d" % k: v for k, v in calib0.items()}
-    md.append("Vítr a nárazy odpovídají stanici, podle které se kalibruje. "
-              "Srážky nejsou kalibrované, procento udává, kolik modelů srážky dává.")
+    md.append("Vítr a nárazy platí pro volné prostranství 10 m nad zemí (jako na stanici ČHMÚ); mezi stromy a u budov "
+              "je průměrný vítr výrazně slabší. Srážky nejsou kalibrované, procento udává, kolik modelů srážky dává.")
     md.append("")
     if STATE["errors"]:
         md.append("Modely bez dat: " + "; ".join(sorted(set(e.split(" (")[0].split(":")[0] for e in STATE["errors"]))) + ".")
