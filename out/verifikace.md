@@ -211,6 +211,125 @@ Zachycené deště = podíl dní s naměřeným úhrnem aspoň 1 mm, které mode
 
 ---
 
+# Černá v Pošumaví – lanový park: modely proti vlastní stanici
+
+Období: 15. 12. 2025 až 16. 11. 2026. Měřítko: vlastní stanice GARNI, hodinové hodnoty po vyřazení vadných úseků. Časy v UTC.
+
+Chyba = průměrná absolutní odchylka předpovědi od měření (menší je lepší). Odchylka = průměr (předpověď − měření); kladná znamená, že model nadsazuje.
+## Shrnutí
+
+| Veličina | Předstih | Nejlepší jednotlivý model | Prostý průměr modelů | Kalibrovaná směs | Směs proti nejlepšímu |
+|---|---|---|---|---|---|
+| Teplota | +1 d | 1,35 | 1,29 | 1,17 | 13 % |
+| Teplota | +2 d | 1,45 | 1,41 | 1,27 | 12 % |
+| Teplota | +3 d | 1,56 | 1,50 | 1,37 | 12 % |
+| Teplota | +5 d | 2,04 | 1,92 | 1,81 | 11 % |
+
+
+## Teplota (°C)
+
+| Model | Chyba +1 den | +2 dny | +3 dny | +5 dní | Odchylka +1 den | Hodin (+1 den) |
+|---|---|---|---|---|---|---|
+| C-LAEF 1 km | 1,04 | – | – | – | 0,07 | 354 |
+| ALADIN-CZ 1 km | 1,28 | 1,38 | – | – | 0,39 | 3473 |
+| ALADIN-CE 2,3 km | 1,30 | 1,40 | – | – | 0,58 | 3473 |
+| HARMONIE-DMI 2 km | 1,38 | – | – | – | 0,12 | 7954 |
+| ICON-CH2 2 km | 1,38 | 1,48 | 1,60 | – | 0,70 | 7954 |
+| HARMONIE-KNMI 5,5 km | 1,38 | – | – | – | 0,22 | 7915 |
+| AROME-FR 1,3 km | 1,41 | – | – | – | 0,28 | 7954 |
+| UKMO 10 km | 1,48 | 1,53 | 1,63 | 2,16 | 0,80 | 7182 |
+| ECMWF AIFS (AI) | 1,54 | 1,65 | 1,70 | 2,08 | 0,92 | 7954 |
+| ICON-EU 7 km | 1,58 | 1,65 | 1,77 | – | 1,09 | 7954 |
+| Open-Meteo best match | 1,59 | 1,65 | 1,77 | 2,39 | 1,18 | 7954 |
+| ICON-D2 2 km | 1,60 | – | – | – | 1,19 | 7902 |
+| ICON 13 km | 1,66 | 1,71 | 1,84 | 2,38 | 1,14 | 7877 |
+| ECMWF IFS 9 km | 1,67 | 1,74 | 1,80 | 2,25 | 0,69 | 7588 |
+| GEM 15 km | 1,71 | 1,69 | 1,87 | 2,28 | 1,04 | 7837 |
+| ARPEGE 11 km | 1,71 | 1,83 | 1,95 | – | 1,18 | 7954 |
+| ECMWF IFS 0,25° | 1,76 | 1,81 | 1,89 | 2,32 | 0,89 | 7954 |
+| GFS 13 km | 1,92 | 2,00 | 2,09 | 2,54 | 0,40 | 7954 |
+
+**Který způsob kalibrace funguje nejlíp** (chyba směsi; vše počítáno jen z dat starších než den vydání):
+
+| Způsob | +1 den | +2 dny | +3 dny | +5 dní |
+|---|---|---|---|---|
+| bez opravy, jen váhy podle úspěšnosti | 1,24 | 1,38 | 1,48 | 1,91 |
+| oprava průměrné odchylky, okno 15 dní | 1,23 | 1,36 | 1,46 | 1,95 |
+| oprava průměrné odchylky, okno 30 dní | 1,25 | 1,36 | 1,46 | 1,92 |
+| oprava průměrné odchylky, okno 60 dní | 1,24 | 1,35 | 1,44 | 1,89 |
+| oprava odchylky podle denní doby, okno 30 dní | 1,18 | 1,30 | 1,40 | 1,85 |
+| **oprava odchylky podle denní doby, okno 60 dní** | 1,17 | 1,27 | 1,37 | 1,81 |
+
+**Směs (oprava odchylky podle denní doby, okno 60 dní) proti jednotlivým modelům** na stejných hodinách:
+
+| Předstih | Směs | Nejlepší jednotlivý model | Prostý průměr modelů | Open-Meteo best match | Zlepšení proti nejlepšímu | Hodin |
+|---|---|---|---|---|---|---|
+| +1 d | 1,17 | 1,35 (HARMONIE-DMI 2 km) | 1,29 | 1,58 | 13 % | 7557 |
+| +2 d | 1,27 | 1,45 (ICON-CH2 2 km) | 1,41 | 1,64 | 12 % | 7509 |
+| +3 d | 1,37 | 1,56 (ICON-CH2 2 km) | 1,50 | 1,74 | 12 % | 7461 |
+| +5 d | 1,81 | 2,04 (ECMWF AIFS (AI)) | 1,92 | 2,32 | 11 % | 7365 |
+
+Podle sezóny:
+
+| Sezóna | Předstih | Směs | Nejlepší jednotlivý model | Hodin |
+|---|---|---|---|---|
+| léto (V–IX) | +1 d | 0,99 | 1,19 (HARMONIE-DMI 2 km) | 3635 |
+| zima (XI–III) | +1 d | 1,45 | 1,44 (ICON-CH2 2 km) | 2458 |
+| léto (V–IX) | +3 d | 1,21 | 1,50 (ECMWF AIFS (AI)) | 3635 |
+| zima (XI–III) | +3 d | 1,58 | 1,62 (ICON-CH2 2 km) | 2362 |
+
+**Vyplatí se kalibrovat podle vlastní stanice?** Chyba směsi proti vlastní stanici, když se opravy a váhy modelů počítají z vlastní stanice, nebo se převezmou z ČHMÚ Černá:
+
+| Předstih | Vlastní stanice | Převzato z ČHMÚ Černá | Jen noc: vlastní | Jen noc: převzato | Jen noc: odchylka převzaté | Hodin |
+|---|---|---|---|---|---|---|
+| +1 d | 1,17 | 1,52 | 1,23 | 1,73 | −1,23 | 7557 |
+| +2 d | 1,27 | 1,59 | 1,31 | 1,77 | −1,20 | 7509 |
+| +3 d | 1,37 | 1,66 | 1,39 | 1,80 | −1,21 | 7461 |
+| +5 d | 1,81 | 2,05 | 1,79 | 2,11 | −1,31 | 7365 |
+
+Stanice proti ČHMÚ: přes den (slunce nad 10°) v průměru −0,8 °C, v noci 1,5 °C.
+
+Závěr: kalibrace podle vlastní stanice je lepší, předpověď ji použije.
+
+Odchylka teploty podle denní doby (předstih 1 den, hodiny v UTC; SEČ = UTC + 1):
+
+| Model | 00 h | 03 h | 06 h | 09 h | 12 h | 15 h | 18 h | 21 h |
+|---|---|---|---|---|---|---|---|---|
+| C-LAEF 1 km | −0,1 | −0,2 | −0,2 | 0,7 | 1,1 | 0,3 | −0,6 | −0,5 |
+| ALADIN-CZ 1 km | 0,3 | 0,5 | 0,7 | 1,2 | 1,0 | −0,1 | −0,7 | 0,2 |
+| ALADIN-CE 2,3 km | 0,6 | 0,8 | 0,8 | 1,2 | 1,0 | 0,0 | −0,4 | 0,6 |
+| HARMONIE-DMI 2 km | −0,1 | 0,0 | 0,8 | 1,2 | 0,7 | −0,1 | −0,9 | −0,5 |
+| ICON-CH2 2 km | 0,7 | 0,8 | 1,1 | 1,5 | 1,1 | 0,3 | −0,2 | 0,4 |
+| HARMONIE-KNMI 5,5 km | 0,1 | 0,2 | 0,9 | 1,2 | 0,7 | −0,1 | −0,8 | −0,4 |
+| AROME-FR 1,3 km | 0,6 | 0,7 | 0,7 | 0,6 | 0,2 | −0,3 | −0,4 | 0,3 |
+| UKMO 10 km | 0,5 | 0,4 | 1,2 | 2,0 | 1,4 | 0,6 | 0,0 | 0,4 |
+
+## Srážky (denní úhrny, mm)
+
+Zachycené deště = podíl dní s naměřeným úhrnem aspoň 1 mm, které model předpověděl. Plané poplachy = podíl dní, kdy model dal aspoň 1 mm a nenapršelo.
+
+| Model | Chyba +1 den | Odchylka +1 den | Zachycené deště | Plané poplachy | Chyba +3 dny | Dní |
+|---|---|---|---|---|---|---|
+| Medián modelů | 0,99 | −0,47 | 61 % | 33 % | 1,04 | 328 |
+| UKMO 10 km | 1,12 | −0,02 | 55 % | 46 % | 1,15 | 310 |
+| ICON-CH2 2 km | 1,17 | −0,05 | 61 % | 40 % | 1,32 | 328 |
+| ARPEGE 11 km | 1,18 | 0,07 | 70 % | 46 % | 1,38 | 328 |
+| ECMWF IFS 9 km | 1,21 | 0,32 | 90 % | 45 % | 1,66 | 328 |
+| ICON-D2 2 km | 1,23 | 0,31 | 71 % | 44 % | – | 328 |
+| ICON-EU 7 km | 1,25 | 0,27 | 80 % | 40 % | 1,36 | 328 |
+| ALADIN-CZ 1 km | 1,26 | 0,12 | 88 % | 30 % | – | 143 |
+| Open-Meteo best match | 1,28 | 0,39 | 72 % | 44 % | 1,37 | 328 |
+| ECMWF IFS 0,25° | 1,31 | 0,49 | 88 % | 46 % | 1,53 | 328 |
+| ICON 13 km | 1,31 | 0,35 | 81 % | 37 % | 1,44 | 324 |
+| ALADIN-CE 2,3 km | 1,31 | 0,18 | 88 % | 30 % | – | 143 |
+| GEM 15 km | 1,32 | 0,23 | 81 % | 47 % | 1,37 | 328 |
+| ECMWF AIFS (AI) | 1,35 | 0,67 | 93 % | 51 % | 1,56 | 328 |
+| HARMONIE-KNMI 5,5 km | 1,39 | 0,32 | 74 % | 44 % | – | 328 |
+| AROME-FR 1,3 km | 1,42 | 0,28 | 67 % | 48 % | – | 328 |
+| HARMONIE-DMI 2 km | 1,53 | 0,49 | 75 % | 46 % | – | 328 |
+| GFS 13 km | 1,68 | 0,83 | 78 % | 49 % | 1,63 | 328 |
+
+
 ## Černá v Pošumaví – lanový park: vlastní stanice proti stanici ČHMÚ v Černé
 
 Kontrola dat stanice:
