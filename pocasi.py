@@ -83,8 +83,17 @@ VARS = {
 }
 LEADS = [0, 1, 2, 3, 5]          # o kolik dní dřív byla předpověď vydaná
 EVAL_LEADS = [1, 2, 3, 5]
-WINDOW = 30                      # dní pro klouzavou kalibraci
+WINDOW = 30                      # dní pro klouzavou kalibraci (výchozí)
 MINP = 7
+SHRINK = 0.8                     # opravu bereme jen z 80 %, zbytek je šum
+# zkoušené způsoby kalibrace: (režim, okno ve dnech)
+VARIANTS = {
+    "add": [("none", 30), ("mean", 15), ("mean", 30), ("mean", 60), ("hod3", 30), ("hod3", 60)],
+    "mul": [("none", 30), ("ratio", 15), ("ratio", 30), ("ratio", 60)],
+}
+DEFAULT_METHOD = {"T": ("mean", 30), "W": ("ratio", 30), "G": ("ratio", 30)}
+VARIANT_NAMES = {"none": "bez opravy, jen váhy podle úspěšnosti", "mean": "oprava průměrné odchylky",
+                 "hod3": "oprava odchylky podle denní doby", "ratio": "přeškálování"}
 
 OM_FORECAST = "https://api.open-meteo.com/v1/forecast"
 OM_PREVIOUS = "https://previous-runs-api.open-meteo.com/v1/forecast"
@@ -126,6 +135,11 @@ def http_json(url, params=None, tries=6, timeout=90, allow404=False):
                     pass
             if rem is not None:
                 STATE["om_remaining"] = rem
+            if cost is not None:
+                try:
+                    time.sleep(min(float(cost) * 0.12, 8.0))   # limit 600 vážených dotazů za minutu
+                except ValueError:
+                    pass
             try:
                 return r.json()
             except ValueError:
@@ -395,10 +409,11 @@ def _roll(a, w):
     return out
 
 
-def rolling_blend(E, O, lead, kind, window=WINDOW, minp=MINP):
+def rolling_blend(E, O, lead, kind, mode="mean", window=WINDOW, shrink=SHRINK, minp=MINP):
     """
     Klouzavá kalibrace jen z minulosti.
     E: čas × model (předpovědi vydané o `lead` dní dřív), O: měření.
+    kind: "add" (teplota) nebo "mul" (vítr). mode: "none" | "mean" | "hod3" | "ratio".
     Vrací (opravené předpovědi, směs).
     """
     idx = E.index
@@ -411,22 +426,29 @@ def rolling_blend(E, O, lead, kind, window=WINDOW, minp=MINP):
     nm = Ev.shape[1]
     shift = lead + 1
     Fc = np.full_like(Ev, np.nan)
+    if mode == "hod3":
+        nb, bins = 8, hod // 3
+    else:
+        nb, bins = 1, np.zeros(len(idx), dtype=int)
+    need = minp * (24 // nb)
     with np.errstate(invalid="ignore", divide="ignore"):
         for j in range(nm):
             e = Ev[:, j]
             ok = ~np.isnan(e) & ~np.isnan(Ov)
-            if kind == "add":
-                S = np.zeros((nd, 24))
-                C = np.zeros((nd, 24))
-                np.add.at(S, (dpos[ok], hod[ok]), (e - Ov)[ok])
-                np.add.at(C, (dpos[ok], hod[ok]), 1.0)
+            if mode == "none":
+                Fc[:, j] = e
+            elif kind == "add":
+                S = np.zeros((nd, nb))
+                C = np.zeros((nd, nb))
+                np.add.at(S, (dpos[ok], bins[ok]), (e - Ov)[ok])
+                np.add.at(C, (dpos[ok], bins[ok]), 1.0)
                 rs = _roll(np.cumsum(S, axis=0), window)
                 rc = _roll(np.cumsum(C, axis=0), window)
-                bias = np.where(rc >= minp, rs / np.maximum(rc, 1.0), np.nan)
+                bias = np.where(rc >= need, rs / np.maximum(rc, 1.0), np.nan) * shrink
                 bsh = np.full_like(bias, np.nan)
                 if nd > shift:
                     bsh[shift:] = bias[:-shift]
-                Fc[:, j] = e - bsh[dpos, hod]
+                Fc[:, j] = e - bsh[dpos, bins]
             else:
                 SF = np.zeros(nd)
                 SO = np.zeros(nd)
@@ -437,8 +459,8 @@ def rolling_blend(E, O, lead, kind, window=WINDOW, minp=MINP):
                 rf = _roll(np.cumsum(SF), window)
                 ro = _roll(np.cumsum(SO), window)
                 rc = _roll(np.cumsum(C), window)
-                ratio = np.where((rc >= minp * 12) & (rf > 1e-6), ro / np.maximum(rf, 1e-6), np.nan)
-                ratio = np.clip(ratio, 0.4, 2.5)
+                ratio = np.where((rc >= minp * 24) & (rf > 1e-6), ro / np.maximum(rf, 1e-6), np.nan)
+                ratio = 1.0 + shrink * (np.clip(ratio, 0.4, 2.5) - 1.0)
                 rsh = np.full(nd, np.nan)
                 if nd > shift:
                     rsh[shift:] = ratio[:-shift]
@@ -452,7 +474,7 @@ def rolling_blend(E, O, lead, kind, window=WINDOW, minp=MINP):
             np.add.at(C2[:, j], dpos[ok], 1.0)
         rs2 = _roll(np.cumsum(S2, axis=0), window)
         rc2 = _roll(np.cumsum(C2, axis=0), window)
-        mse = np.where(rc2 >= minp * 12, rs2 / np.maximum(rc2, 1.0), np.nan)
+        mse = np.where(rc2 >= minp * 24, rs2 / np.maximum(rc2, 1.0), np.nan)
         msh = np.full_like(mse, np.nan)
         if nd > shift:
             msh[shift:] = mse[:-shift]
@@ -467,10 +489,10 @@ def rolling_blend(E, O, lead, kind, window=WINDOW, minp=MINP):
             pd.Series(blend, index=idx))
 
 
-def current_calibration(E, O, kind, window=WINDOW, minp=MINP):
+def current_calibration(E, O, kind, mode="mean", window=WINDOW, shrink=SHRINK, minp=MINP):
     """
     Kalibrace z posledních `window` dní pro provozní předpověď.
-    Vrací slovník model -> {"bias": [24] | "ratio": x, "mse": y, "n": n} a RMSE směsi.
+    Vrací slovník model -> {"bias": [...] | "ratio": x, "mse": y, "n": n} a RMSE směsi.
     """
     out = {}
     if E.empty:
@@ -486,20 +508,29 @@ def current_calibration(E, O, kind, window=WINDOW, minp=MINP):
     for m in E.columns:
         e = E[m].to_numpy(dtype=float)
         ok = ~np.isnan(e) & ~np.isnan(Ov)
-        if ok.sum() < minp * 12:
+        if ok.sum() < minp * 24:
             continue
-        if kind == "add":
-            bias = np.zeros(24)
-            for h in range(24):
-                s = ok & (hod == h)
-                bias[h] = float((e[s] - Ov[s]).mean()) if s.sum() >= 4 else float((e[ok] - Ov[ok]).mean())
-            c = e - bias[hod]
-            entry = {"bias": [round(float(b), 3) for b in bias]}
+        entry = {}
+        if mode == "none":
+            c = e
+        elif kind == "add":
+            allb = float((e[ok] - Ov[ok]).mean())
+            if mode == "hod3":
+                bias = []
+                for b in range(8):
+                    sb = ok & ((hod // 3) == b)
+                    bias.append(shrink * (float((e[sb] - Ov[sb]).mean()) if sb.sum() >= 12 else allb))
+                c = e - np.array(bias)[hod // 3]
+            else:
+                bias = [shrink * allb]
+                c = e - bias[0]
+            entry["bias"] = [round(float(x), 3) for x in bias]
         else:
             sf = float(e[ok].sum())
             ratio = float(np.clip(Ov[ok].sum() / sf, 0.4, 2.5)) if sf > 1e-6 else 1.0
+            ratio = 1.0 + shrink * (ratio - 1.0)
             c = e * ratio
-            entry = {"ratio": round(ratio, 3)}
+            entry["ratio"] = round(ratio, 3)
         mse = float(((c - Ov)[ok] ** 2).mean())
         entry["mse"] = round(mse, 4)
         entry["n"] = int(ok.sum())
@@ -572,7 +603,7 @@ def run_verify(start, outdir):
         raise SystemExit("Nepodařilo se načíst žádné předpovědi: " + "; ".join(STATE["errors"][:5]))
 
     md = []
-    skill = {"period": [str(start), str(end)], "station": site["chmi"], "models": {}, "blend": {}}
+    skill = {"period": [str(start), str(end)], "station": site["chmi"], "models": {}, "blend": {}, "method": {}}
     md.append("# Jak se modely trefují v Černé v Pošumaví")
     md.append("")
     md.append("Období: %s až %s. Měřítko: stanice ČHMÚ Černá v Pošumaví (740 m), desetiminutová data převedená na hodinová. "
@@ -614,11 +645,10 @@ def run_verify(start, outdir):
         md.append(md_table(["Model", "Chyba +1 den", "+2 dny", "+3 dny", "+5 dní", "Odchylka +1 den", "Hodin (+1 den)"], rows))
         md.append("")
 
-        # směs
-        md.append("**Kalibrovaná směs proti jednotlivým modelům** (jen období, kdy už je z čeho kalibrovat; "
-                  "směs smí použít jen data starší než den vydání předpovědi):")
-        md.append("")
-        rows = []
+        # směs: vyzkoušej všechny způsoby kalibrace na stejných hodinách
+        variants = VARIANTS[kind]
+        base = {}
+        res = {}
         for L in EVAL_LEADS:
             E = fc.get((vk, L), pd.DataFrame())
             cols = [m for m in E.columns if m in BLEND]
@@ -626,11 +656,48 @@ def run_verify(start, outdir):
                 continue
             Eb = E[cols]
             oo = o.reindex(Eb.index)
-            Fc, blend = rolling_blend(Eb, oo, L, kind)
-            okb = blend.notna() & oo.notna()
-            nb = int(okb.sum())
-            if nb < 300:
+            base[L] = (E, Eb, oo)
+            for v in variants:
+                _, bl = rolling_blend(Eb, oo, L, kind, mode=v[0], window=v[1])
+                res.setdefault(v, {})[L] = bl
+        masks = {}
+        for L in list(base):
+            msk = base[L][2].notna()
+            for v in variants:
+                msk &= res[v][L].notna()
+            if int(msk.sum()) >= 300:
+                masks[L] = msk
+            else:
+                del base[L]
+        vmae = {v: {L: float((res[v][L][masks[L]] - base[L][2][masks[L]]).abs().mean()) for L in base}
+                for v in variants}
+        best_v = DEFAULT_METHOD[vk]
+        if base:
+            score = {v: float(np.mean(list(vmae[v].values()))) for v in variants}
+            best_v = min(score, key=score.get)
+            skill["method"][vk] = {"mode": best_v[0], "window": best_v[1],
+                                   "variants": {"%s/%d" % v: {str(L): x for L, x in vmae[v].items()} for v in variants}}
+            vrows = []
+            for v in variants:
+                name = VARIANT_NAMES[v[0]] + ("" if v[0] == "none" else ", okno %d dní" % v[1])
+                vrows.append([("**%s**" % name) if v == best_v else name] +
+                             [cz(vmae[v].get(L, np.nan), 2) for L in EVAL_LEADS])
+            md.append("**Který způsob kalibrace funguje nejlíp** (chyba směsi; vše počítáno jen z dat starších než den vydání):")
+            md.append("")
+            md.append(md_table(["Způsob", "+1 den", "+2 dny", "+3 dny", "+5 dní"], vrows))
+            md.append("")
+        md.append("**Směs (%s) proti jednotlivým modelům** na stejných hodinách:" %
+                  (VARIANT_NAMES[best_v[0]] + ("" if best_v[0] == "none" else ", okno %d dní" % best_v[1])))
+        md.append("")
+        rows = []
+        for L in EVAL_LEADS:
+            if L not in base:
                 continue
+            E, Eb, oo = base[L]
+            cols = list(Eb.columns)
+            blend = res[best_v][L]
+            okb = masks[L]
+            nb = int(okb.sum())
             sb = basic_stats(blend[okb], oo[okb])
             raw_mean = Eb.mean(axis=1).where(Eb.notna().sum(axis=1) >= 2)
             sm = basic_stats(raw_mean[okb], oo[okb])
@@ -650,8 +717,8 @@ def run_verify(start, outdir):
                 "mae": sb["mae"], "rmse": sb["rmse"], "bias": sb["bias"], "n": nb,
                 "best_single": best_name, "best_single_mae": best["mae"] if best else None,
                 "raw_mean_mae": sm["mae"], "best_match_mae": sbm["mae"]}
-            summary_rows.append([title, "+%d d" % L, cz(best["mae"], 2) if best else "–", cz(sb["mae"], 2),
-                                 (cz(gain, 0) + " %") if not np.isnan(gain) else "–"])
+            summary_rows.append([title, "+%d d" % L, cz(best["mae"], 2) if best else "–", cz(sm["mae"], 2),
+                                 cz(sb["mae"], 2), (cz(gain, 0) + " %") if not np.isnan(gain) else "–"])
             # sezóny
             for sname in ("léto (V–IX)", "zima (XI–III)"):
                 sel = okb & season_mask(blend.index, sname)
@@ -750,7 +817,8 @@ def run_verify(start, outdir):
 
     if summary_rows:
         md.insert(5, "## Shrnutí\n\n" + md_table(
-            ["Veličina", "Předstih", "Nejlepší jednotlivý model", "Kalibrovaná směs", "Zlepšení"], summary_rows) + "\n")
+            ["Veličina", "Předstih", "Nejlepší jednotlivý model", "Prostý průměr modelů", "Kalibrovaná směs",
+             "Směs proti nejlepšímu"], summary_rows) + "\n")
     if STATE["errors"]:
         md.append("## Co se nepodařilo načíst")
         md.append("")
@@ -846,12 +914,16 @@ def apply_calibration(per, calib, now):
                     others = [e["mse"] for e in calib.get((vk, min(L, 3)), {}).values()]
                     mse = (float(np.median(others)) * 2.0) if others else 4.0
                     cv = vals
-                elif kind == "add":
-                    b = np.array(entry["bias"])[s.index.hour.to_numpy()[sel]]
-                    cv = vals - b
+                elif "bias" in entry:
+                    barr = np.array(entry["bias"])
+                    hh = s.index.hour.to_numpy()[sel]
+                    cv = vals - (barr[hh // 3] if len(barr) == 8 else barr[0])
+                    mse = entry["mse"]
+                elif "ratio" in entry:
+                    cv = vals * entry["ratio"]
                     mse = entry["mse"]
                 else:
-                    cv = vals * entry["ratio"]
+                    cv = vals
                     mse = entry["mse"]
                 c.iloc[np.where(sel)[0]] = cv
                 w.iloc[np.where(sel)[0]] = 1.0 / max(mse, 0.05)
@@ -884,7 +956,16 @@ def agreement(spread, scale):
 def run_forecast(outdir):
     now = pd.Timestamp(dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))
     today = now.date()
-    start = today - dt.timedelta(days=WINDOW + 20)
+    method = dict(DEFAULT_METHOD)
+    try:
+        with open(os.path.join(outdir, "skill.json"), encoding="utf-8") as f:
+            for k, v in (json.load(f).get("method") or {}).items():
+                method[k] = (v["mode"], int(v["window"]))
+    except (OSError, ValueError, KeyError):
+        pass
+    log("  způsob kalibrace: %s" % method)
+    maxwin = max(w for _, w in method.values())
+    start = today - dt.timedelta(days=maxwin + 20)
     cal_site = SITES["cerna"]
     log("== Předpověď, vydáno %s UTC" % now.strftime("%Y-%m-%d %H:%M"))
 
@@ -900,7 +981,7 @@ def run_forecast(outdir):
             E = fc.get((vk, L), pd.DataFrame())
             if E.empty or vk not in obs:
                 continue
-            c, rmse = current_calibration(E, obs[vk], kind)
+            c, rmse = current_calibration(E, obs[vk], kind, mode=method[vk][0], window=method[vk][1])
             calib[(vk, L)] = c
             blend_rmse[(vk, L)] = rmse
     ncal = len(calib.get(("T", 1), {}))
@@ -912,7 +993,7 @@ def run_forecast(outdir):
     md.append("# Předpověď pro Lipno – kalibrovaná směs modelů")
     md.append("")
     md.append("Vydáno %s %s. Kalibrace podle stanice ČHMÚ Černá v Pošumaví za posledních %d dní."
-              % (DAYS[issued_local.weekday()], issued_local.strftime("%-d. %-m. %Y %H:%M"), WINDOW))
+              % (DAYS[issued_local.weekday()], issued_local.strftime("%-d. %-m. %Y %H:%M"), method["T"][1]))
     md.append("")
 
     for key, site in SITES.items():
