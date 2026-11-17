@@ -47,7 +47,7 @@ Pravidelné spouštění je v souboru workflow připravené, ale zakomentované.
   `python pwl_export.py EXPORT.csv data/pwl_frymburk.csv` (pro lanový park `data/pwl_cerna.csv`).
 - Kontrola dat (při každém běhu): vyřadí se úseky, kdy čidlo neposílalo data, kdy stál anemometr (24 hodin skoro samé nuly, nebo nula při větru na stanici ČHMÚ) a měsíce, kdy srážkoměr naměřil méně než pětinu toho co ČHMÚ.
 - Vítr a nárazy se vždy kalibrují podle stanice ČHMÚ (volné prostranství, 10 m nad zemí). Vlastní stanice jsou v závětří a slouží jen k porovnání: `verifikace.md` ukazuje, kolik stanice ukáže při jakém větru na ČHMÚ.
-- Teplota ve Frymburku: `verify` porovná kalibraci podle vlastní stanice s kalibrací převzatou z Černé a rozhodne (`out/skill.json`, `targets.frymburk.transfer.T.use`): `all` = podle vlastní stanice, `night` = jen v noci (čidlo se na slunci přehřívá), `none` = stanice kalibraci nezlepší. Data starší než 14 dní se nepoužijí.
+- Teplota: u obou míst `verify` porovná kalibraci podle vlastní stanice s kalibrací převzatou ze stanice ČHMÚ a rozhodne (`out/skill.json`, `targets.<místo>.transfer.T.use`): `all` = podle vlastní stanice, `night` = jen v noci (čidlo se na slunci přehřívá), `none` = stanice kalibraci nezlepší. Data starší než 14 dní se nepoužijí. Vypnout to jde nastavením `"own": ()` u místa v `SITES`.
 
 ## Co chybí
 

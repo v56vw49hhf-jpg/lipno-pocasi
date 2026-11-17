@@ -43,7 +43,7 @@ SITES = {
         "chmi": "0-203-0-11547",      # stanice ČHMÚ Černá v Pošumaví
         "calib": "cerna",
         "wu": "IERNVP8",               # vlastní stanice na Weather Underground (terasa u lanového parku)
-        "own": (),                     # stanice ČHMÚ je 500 m odtud, vlastní stanice se jen porovnává
+        "own": ("T",),                 # terasa u lesa: v noci tepleji a přes den chladněji než stanice ČHMÚ 500 m odtud
     },
     "frymburk": {
         "name": "Frymburk – wake",
@@ -1247,7 +1247,7 @@ def run_verify(start, outdir):
                 "Období: %s až %s. Měřítko: vlastní stanice GARNI, hodinové hodnoty po vyřazení vadných úseků. Časy v UTC."
                 % (s0.strftime("%-d. %-m. %Y"), end.strftime("%-d. %-m. %Y")),
                 st, fcs, s0, end, s_site.get("wu") or "PWL", vars_=own, site=s_site,
-                transfer=None if key == "cerna" else (fc, obs, ref_method, "ČHMÚ Černá"))
+                transfer=(fc, obs, ref_method, "ČHMÚ Černá"))
             md += m2 + [""]
             skill["targets"][key] = s2
         md += station_vs_chmi(s_site["name"], st, obs, raw=raw, notes=notes)
@@ -1407,8 +1407,9 @@ def run_forecast(outdir):
     cal_site = SITES["cerna"]
     log("== Předpověď, vydáno %s UTC" % now.strftime("%Y-%m-%d %H:%M"))
 
-    def build(site_fc, obs_k, meth, var_keys=("T", "W", "G"), minp=MINP):
-        fc = fetch_previous_runs(site_fc, start, today, var_keys=tuple(var_keys), leads=[1, 2, 3, 5])
+    def build(site_fc, obs_k, meth, var_keys=("T", "W", "G"), minp=MINP, fc=None):
+        if fc is None:
+            fc = fetch_previous_runs(site_fc, start, today, var_keys=tuple(var_keys), leads=[1, 2, 3, 5])
         cal, rm = {}, {}
         for vk in var_keys:
             kind = VARS[vk][1]
@@ -1419,12 +1420,12 @@ def run_forecast(outdir):
                 c, rmse = current_calibration(E, obs_k[vk], kind, mode=meth[vk][0], window=meth[vk][1], minp=minp)
                 cal[(vk, L)] = c
                 rm[(vk, L)] = rmse
-        return cal, rm
+        return cal, rm, fc
 
     log("-- měření ČHMÚ za kalibrační okno")
     obs = obs_hourly(fetch_chmi_10min(cal_site["chmi"], start, today))
     log("-- poslední předpovědi modelů za kalibrační okno")
-    calib0, rmse0 = build(cal_site, obs, method)
+    calib0, rmse0, fc0 = build(cal_site, obs, method)
     ncal = len(calib0.get(("T", 1), {}))
     log("  modelů s kalibrací (teplota, +1 den): %d" % ncal)
     per_site = {}
@@ -1433,7 +1434,7 @@ def run_forecast(outdir):
         per_site[key] = (calib0, rmse0, "stanice ČHMÚ Černá v Pošumaví", None)
         raw = station_update(key)
         own = [v for v in (site.get("own") or ()) if v in vnames]
-        if key == "cerna" or not own or raw is None or not len(raw):
+        if not own or raw is None or not len(raw):
             continue
         st, _ = station_qc(raw, obs)
         use = {}
@@ -1455,7 +1456,8 @@ def run_forecast(outdir):
         stc = st.copy()
         if use.get("T") == "night":
             stc["T"] = stc["T"].where(sun_elev(stc.index, site["lat"], site["lon"]) < NIGHT_ELEV)
-        c2, r2 = build(site, stc, meth, var_keys=list(use), minp=NIGHT_MINP if "night" in use.values() else MINP)
+        c2, r2, _ = build(site, stc, meth, var_keys=list(use), minp=NIGHT_MINP if "night" in use.values() else MINP,
+                          fc=fc0 if key == "cerna" else None)
         cal, rm, done, night_cal = dict(calib0), dict(rmse0), [], None
         for vk, how in use.items():
             if len(c2.get((vk, 1), {})) < 3:
