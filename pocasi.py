@@ -453,7 +453,8 @@ def wu_to_hourly(obs_list):
     for c in ("tavg", "W", "G", "ptot", "D"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
     d = df.groupby("loc")["ptot"].diff()
-    df["P"] = d.where(d.notna(), df["ptot"]).clip(lower=0)
+    # první hodina dne: úhrn od půlnoci; pokles během dne = konzole se restartovala, počítá se od nuly
+    df["P"] = d.where(d.notna() & (d >= 0), df["ptot"]).clip(lower=0)
     df = df.set_index("t")
     # Weather Underground dává hodinový průměr teploty, modely i ČHMÚ hodnotu v celou hodinu.
     # Hodnota v celou hodinu ~ průměr dvou sousedních hodinových průměrů (jinak ráno a večer sedí o 0,6 °C vedle).
@@ -515,8 +516,12 @@ def station_update(key, start=None, end=None, backfill=False):
     if not new:
         return df
     add = pd.concat(new)
-    merged = pd.concat([df, add])
+    add = add[add.index <= pd.Timestamp(dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))]   # bez rozdělané hodiny
+    if not len(add):
+        return df
+    merged = pd.concat([df, add]) if len(df) else add
     merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    merged = merged.reindex(columns=STATION_COLS).apply(pd.to_numeric, errors="coerce")
     os.makedirs(os.path.join(STATION_DIR, key), exist_ok=True)
     changed = set(zip(add.index.year, add.index.month))
     for (y, m) in sorted(changed):
@@ -650,6 +655,16 @@ def station_vs_chmi(name, st, ref, raw=None, notes=None):
                              "Náraz ČHMÚ", "Náraz stanice", "Stanice / ČHMÚ"], rows), "",
                    "Nárazy stanice jsou podhodnocené i tím, že se ukládá jedna okamžitá hodnota za 5 minut, "
                    "kdežto ČHMÚ zaznamená nejvyšší náraz z celých deseti minut.", ""]
+        if "D_s" in j.columns:
+            both = jj[jj["D_s"].notna() & (jj["W_s"] >= 0.5)]
+            if len(both) >= 200:
+                sc = (((both["D_c"] + 22.5) % 360) // 45).astype(int)
+                ss = (((both["D_s"] + 22.5) % 360) // 45).astype(int)
+                rows = [[DIRS[k], cz(100.0 * float((sc == k).mean()), 0) + " %", cz(100.0 * float((ss == k).mean()), 0) + " %"]
+                        for k in range(8)]
+                md += ["Odkud fouká podle ČHMÚ a podle stanice (podíl hodin; jen když ČHMÚ měří aspoň 2 m/s a stanice aspoň 0,5 m/s). "
+                       "Když stanice ukazuje skoro jen dva protilehlé směry, vítr u ní usměrňuje překážka (hrana lesa, stěna domu):", "",
+                       md_table(["Směr", "ČHMÚ", "Stanice"], rows), ""]
         # silný vítr: co ukazuje stanice, když ČHMÚ hlásí silné nárazy
         gg = j[j["G_c"].notna() & j["G_s"].notna()]
         rows = []
