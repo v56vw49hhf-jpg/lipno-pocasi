@@ -1307,7 +1307,7 @@ def lead_bucket(hours_ahead):
 
 def fetch_current(site):
     names = ["temperature_2m", "wind_speed_10m", "wind_gusts_10m", "wind_direction_10m",
-             "precipitation", "cloud_cover", "cape"]
+             "precipitation", "cloud_cover", "cape", "snowfall"]
     per = {}
     for label, ids, _ in MODELS:
         merged = None
@@ -1445,10 +1445,21 @@ def run_forecast(outdir):
     ncal = len(calib0.get(("T", 1), {}))
     log("  modelů s kalibrací (teplota, +1 den): %d" % ncal)
     per_site = {}
+    station_last = {}
     vnames = {"T": "teplota", "W": "vítr", "G": "nárazy"}
     for key, site in SITES.items():
         per_site[key] = (calib0, rmse0, "stanice ČHMÚ Černá v Pošumaví", None)
         raw = station_update(key)
+        try:
+            if raw is not None and len(raw) and raw["T"].notna().any():
+                lt = raw["T"].dropna().index.max()
+                if (now - lt) <= pd.Timedelta(hours=8):
+                    r = raw.loc[lt]
+                    station_last[key] = {"time_utc": lt.isoformat(), "temp": round(float(r["T"]), 1),
+                                         "wind": None if pd.isna(r["W"]) else round(float(r["W"]), 1),
+                                         "gust": None if pd.isna(r["G"]) else round(float(r["G"]), 1)}
+        except Exception as e:      # jen doplněk pro stránku, nesmí shodit výpočet
+            log("  %s: poslední měření stanice se nepodařilo připravit (%s)" % (key, e))
         own = [v for v in (site.get("own") or ()) if v in vnames]
         if not own or raw is None or not len(raw):
             continue
@@ -1611,7 +1622,43 @@ def run_forecast(outdir):
         md.append("")
         md.append("Kalibrace: %s." % src)
         md.append("")
-        result["sites"][key] = {"name": site["name"], "blocks_3h": hourly_json, "daily": daily_json,
+        # hodinové řady pro grafy (7 dní)
+        series = []
+        try:
+            cloud = pd.DataFrame({m: per[m]["cloud_cover"] for m in blend_models if "cloud_cover" in per[m]}).median(axis=1)
+            snow = pd.DataFrame({m: per[m]["snowfall"] for m in blend_models if "snowfall" in per[m]})
+            snowshare = (snow > 0).sum(axis=1) / snow.notna().sum(axis=1).clip(lower=1) if snow.shape[1] else pd.Series(dtype=float)
+            pn = P.notna().sum(axis=1)
+            pmean = P.mean(axis=1).where(pn >= 2)
+            pshare = ((P >= 0.1).sum(axis=1) / pn.clip(lower=1) * 100).where(pn >= 2)
+            elev = pd.Series(sun_elev(idx, site["lat"], site["lon"]), index=idx)
+
+            def val(sr, t, nd=1):
+                v = sr.get(t, np.nan) if len(sr) else np.nan
+                return None if v is None or pd.isna(v) else round(float(v), nd)
+
+            for k in range(0, 168):
+                t = t0 + pd.Timedelta(hours=k)
+                if t not in idx or pd.isna(Tm.get(t, np.nan)):
+                    continue
+                ts = float(Ts.get(t, np.nan))
+                unc = blend_rmse.get(("T", min(lead_bucket(k), 3)), np.nan)
+                half = 1.28 * math.sqrt((ts if not np.isnan(ts) else 0) ** 2 + (unc if not np.isnan(unc) else 1.5) ** 2)
+                tv = float(Tm[t])
+                pm, ps = val(pmean, t, 2), val(pshare, t, 0)
+                cp = val(cape, t, 0)
+                sn = val(snowshare, t, 2)
+                series.append({"t": t.strftime("%Y-%m-%dT%H:00Z"), "T": round(tv, 1), "lo": round(tv - half, 1), "hi": round(tv + half, 1),
+                               "W": val(Wm, t), "G": val(Gm, t), "D": val(wdir, t, 0), "P": pm, "Pp": ps,
+                               "C": val(cloud, t, 0), "night": bool(elev[t] < 0),
+                               "snow": bool(sn is not None and sn >= 0.5) or bool(pm and pm > 0 and tv <= 0.3),
+                               "storm": bool(cp is not None and cp >= 600 and ps is not None and ps >= 30),
+                               "n": int(Tn.get(t, 0))})
+        except Exception as e:      # grafy jsou doplněk, tabulková předpověď musí vyjít vždy
+            log("  hodinové řady pro grafy se nepodařilo připravit: %s" % e)
+            series = []
+        result["sites"][key] = {"name": site["name"], "blocks_3h": hourly_json, "daily": daily_json, "hourly": series,
+                                "station_last": station_last.get(key),
                                 "models": sorted(per.keys()), "calibration_source": src}
 
     result["errors"] = STATE["errors"]
@@ -1639,7 +1686,34 @@ def run_forecast(outdir):
             f.write(text)
     log("\n" + text)
     log("dotazů na Open-Meteo: %d, váha: %.0f, zbývá: %s" % (STATE["om_calls"], STATE["om_cost"], STATE["om_remaining"]))
-    send_telegram(text)
+    cards = []
+    try:
+        import web
+        cards = web.write_all(result, "docs")
+        log("stránka: docs/index.html, obrázků pro Telegram: %d" % len(cards))
+    except Exception as e:
+        log("stránku s grafy se nepodařilo vytvořit: %s" % e)
+    if not send_telegram_cards(cards):
+        send_telegram(text)
+
+
+def send_telegram_cards(cards):
+    """Pošle do Telegramu obrázky s grafem (jeden na místo). Vrací True, když odešel aspoň jeden."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if not token or not chat or not cards:
+        return False
+    ok = False
+    for path, cap in cards:
+        try:
+            with open(path, "rb") as f:
+                r = requests.post("https://api.telegram.org/bot%s/sendPhoto" % token,
+                                  data={"chat_id": chat, "caption": cap[:1000]}, files={"photo": f}, timeout=60)
+            log("Telegram obrázek: HTTP %d" % r.status_code)
+            ok = ok or r.status_code == 200
+        except (requests.RequestException, OSError) as e:
+            log("Telegram obrázek selhal: %s" % type(e).__name__)
+    return ok
 
 
 def send_telegram(text):
