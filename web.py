@@ -369,6 +369,10 @@ footer a{color:inherit}
 
 JS = """
 (function(){
+var t0=Date.now();
+function fresh(){if(Date.now()-t0>15*60*1000)location.reload()}
+document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')fresh()});
+window.addEventListener('pageshow',function(e){if(e.persisted)fresh()});
 var D=JSON.parse(document.getElementById('d').textContent),tabs=document.querySelectorAll('.tabs button');
 function show(k){tabs.forEach(function(b){var on=b.dataset.k===k;b.setAttribute('aria-selected',on);document.getElementById('s-'+b.dataset.k).hidden=!on});try{localStorage.setItem('misto',k)}catch(e){}}
 tabs.forEach(function(b){b.addEventListener('click',function(){show(b.dataset.k)})});
