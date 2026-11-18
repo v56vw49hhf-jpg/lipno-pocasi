@@ -14,24 +14,63 @@ on:
       start:
         description: "Zacatek zpetneho vyhodnoceni (RRRR-MM-DD)"
         default: "2025-10-01"
-  # 4x denne: cca 4:20, 10:20, 16:20 a 22:20 zimniho casu
+  # GitHub planovane behy obcas vynecha, proto kontrola kazdou hodinu:
+  # predpoved se spocita, jen kdyz od posledniho terminu (4:15, 10:15, 16:15, 22:15
+  # mistniho casu) jeste zadna nevznikla. Ostatni kontroly skonci za par sekund.
   schedule:
-    - cron: "20 3,9,15,21 * * *"
+    - cron: "25 * * * *"
 
 permissions:
   contents: write
   pages: write
   id-token: write
 
-concurrency:
-  group: lipno-pocasi
-  cancel-in-progress: false
-
 jobs:
+  kontrola:
+    runs-on: ubuntu-latest
+    outputs:
+      bezet: ${{ steps.kdy.outputs.bezet }}
+    steps:
+      - name: Stahnout posledni predpoved
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: out
+      - name: Je cas na predpoved
+        id: kdy
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "bezet=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, datetime as dt
+          from zoneinfo import ZoneInfo
+          tz = ZoneInfo("Europe/Prague")
+          now = dt.datetime.now(tz)
+          slots = []
+          for d in (0, 1):
+              day = (now - dt.timedelta(days=d)).date()
+              for h in (4, 10, 16, 22):
+                  slots.append(dt.datetime(day.year, day.month, day.day, h, 15, tzinfo=tz))
+          last_slot = max(s for s in slots if s <= now)
+          try:
+              t = json.load(open("out/predpoved.json", encoding="utf-8"))["issued_utc"]
+              issued = dt.datetime.strptime(t, "%Y-%m-%dT%H:%MZ").replace(tzinfo=dt.timezone.utc)
+          except Exception:
+              issued = None
+          print("bezet=%d" % (issued is None or issued < last_slot))
+          EOF
+          cat "$GITHUB_OUTPUT"
+
   pocasi:
+    needs: kontrola
+    if: needs.kontrola.outputs.bezet == '1'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
+    concurrency:
+      group: lipno-pocasi
+      cancel-in-progress: false
     timeout-minutes: 75
     steps:
       - name: Stahnout kod
@@ -61,6 +100,7 @@ jobs:
           git add docs 2>/dev/null || true
           if ! git diff --cached --quiet; then
             git commit -m "Vystupy $(date -u +%Y-%m-%dT%H:%MZ)"
+            git pull --rebase -X theirs origin main || true
             git push
           fi
       - name: Pripravit stranku
