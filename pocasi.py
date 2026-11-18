@@ -129,7 +129,8 @@ def http_json(url, params=None, tries=6, timeout=90, allow404=False):
         try:
             r = SESSION.get(url, params=params, timeout=timeout)
         except requests.RequestException as e:
-            last = "síť: %s" % e
+            last = "síť: %s" % type(e).__name__
+            log("    %s, zkouším znovu (pokus %d z %d)" % (last, attempt + 2, tries) if attempt + 1 < tries else "    %s, vzdávám to" % last)
             time.sleep(3 + 3 * attempt + random.random())
             continue
         if r.status_code == 200:
