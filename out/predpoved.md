@@ -1,37 +1,38 @@
 # Předpověď pro Lipno – kalibrovaná směs modelů
 
-Vydáno út 17. 11. 2026 23:23.
+Vydáno st 18. 11. 2026 08:00.
 
 ## Černá v Pošumaví – lanový park
 
 | Kdy | Teplota | Vítr / nárazy | Srážky (shoda modelů) | Jistota teploty |
 |---|---|---|---|---|
-| st 00–03 | 7 °C (5 až 10) | 5 / 14 m/s JZ | 0,2 mm (24 %) | střední |
-| st 03–06 | 7 °C (5 až 9) | 8 / 18 m/s JZ | 4,4 mm (94 %) | střední |
-| st 06–09 | 6 °C (4 až 8) | 7 / 18 m/s Z | 1,3 mm (82 %) | střední |
-| st 09–12 | 6 °C (4 až 9) | 8 / 18 m/s Z | 0,6 mm (41 %) | vysoká |
-| st 12–15 | 7 °C (5 až 9) | 8 / 17 m/s Z | 1,3 mm (65 %) | vysoká |
-| st 15–18 | 7 °C (5 až 9) | 7 / 17 m/s Z | 0,5 mm (47 %) | vysoká |
-| st 18–21 | 6 °C (4 až 8) | 8 / 16 m/s Z | 1,0 mm (65 %) | vysoká |
-| st 21–00 | 6 °C (4 až 8) | 8 / 17 m/s Z | 0,5 mm (53 %) | vysoká |
-| čt 00–03 | 5 °C (3 až 8) | 6 / 15 m/s Z | – | vysoká |
-| čt 03–06 | 5 °C (2 až 7) | 4 / 12 m/s JZ | – | vysoká |
-| čt 06–09 | 3 °C (1 až 6) | 2 / 5 m/s J | – | střední |
-| čt 09–12 | 6 °C (3 až 8) | 2 / 4 m/s JZ | – | vysoká |
-| čt 12–15 | 6 °C (3 až 8) | 4 / 12 m/s JZ | 1,5 mm (88 %) | střední |
-| čt 15–18 | 6 °C (4 až 8) | 6 / 14 m/s Z | 0,8 mm (75 %) | vysoká |
-| čt 18–21 | 6 °C (3 až 8) | 7 / 15 m/s Z | 0,9 mm (87 %) | vysoká |
-| čt 21–00 | 5 °C (3 až 8) | 7 / 15 m/s Z | 1,0 mm (86 %) | vysoká |
+| st 08–11 | 6 °C (4 až 8) | 8 / 18 m/s Z | 1,1 mm (59 %) | vysoká |
+| st 11–14 | 7 °C (5 až 9) | 8 / 18 m/s Z | 0,5 mm (53 %) | vysoká |
+| st 14–17 | 7 °C (5 až 9) | 7 / 17 m/s Z | 0,8 mm (59 %) | vysoká |
+| st 17–20 | 7 °C (4 až 9) | 7 / 16 m/s Z | 1,0 mm (65 %) | vysoká |
+| st 20–23 | 6 °C (4 až 8) | 8 / 17 m/s Z | 0,8 mm (71 %) | vysoká |
+| st 23–02 | 5 °C (3 až 8) | 7 / 16 m/s Z | 0,2 mm (29 %) | vysoká |
+| čt 02–05 | 5 °C (3 až 7) | 5 / 13 m/s JZ | – | vysoká |
+| čt 05–08 | 3 °C (1 až 6) | 2 / 8 m/s JZ | – | střední |
+| čt 08–11 | 5 °C (3 až 7) | 1 / 4 m/s J | – | vysoká |
+| čt 11–14 | 6 °C (4 až 8) | 2 / 8 m/s JZ | 0,5 mm (65 %) | vysoká |
+| čt 14–17 | 5 °C (3 až 8) | 5 / 13 m/s Z | 1,2 mm (100 %) | vysoká |
+| čt 17–20 | 6 °C (4 až 8) | 6 / 14 m/s Z | 0,6 mm (69 %) | vysoká |
+| čt 20–23 | 5 °C (3 až 7) | 6 / 14 m/s Z | 0,7 mm (75 %) | vysoká |
+| čt 23–02 | 5 °C (3 až 7) | 6 / 14 m/s JZ | 1,4 mm (94 %) | vysoká |
+| pá 02–05 | 5 °C (3 až 7) | 7 / 16 m/s Z | 1,5 mm (94 %) | vysoká |
+| pá 05–08 | 4 °C (2 až 7) | 7 / 16 m/s Z | 1,2 mm (87 %) | vysoká |
 
 | Den | Min / max | Max. náraz | Srážky: medián (rozpětí), pravděp. ≥ 1 mm | Shoda modelů | Modelů |
 |---|---|---|---|---|---|
-| st 18. 11. | 6 / 8 °C | 18 m/s | 6,4 mm (4–22), 100 % | vysoká | 17 |
-| čt 19. 11. | 3 / 6 °C | 15 m/s | 3,0 mm (2–8), 100 % | vysoká | 17 |
-| pá 20. 11. | 4 / 6 °C | 15 m/s | 9,2 mm (4–19), 100 % | vysoká | 14 |
-| so 21. 11. | 0 / 4 °C | 13 m/s | 7,4 mm (2–9), 89 % | střední | 9 |
-| ne 22. 11. | −3 / 2 °C | 7 m/s | 0,0 mm (0–6), 25 % | střední | 8 |
-| po 23. 11. | −2 / 2 °C | 9 m/s | 1,1 mm (0–12), 50 % | nízká | 6 |
-| út 24. 11. | −2 / 3 °C | 6 m/s | 0,7 mm (0–2), 50 % | střední | 6 |
+| st 18. 11. | 6 / 7 °C | 18 m/s | 4,9 mm (1–14), 82 % | vysoká | 17 |
+| čt 19. 11. | 3 / 7 °C | 16 m/s | 3,0 mm (2–6), 94 % | vysoká | 17 |
+| pá 20. 11. | 4 / 6 °C | 16 m/s | 7,5 mm (4–17), 100 % | vysoká | 16 |
+| so 21. 11. | 0 / 4 °C | 12 m/s | 4,8 mm (3–9), 100 % | střední | 11 |
+| ne 22. 11. | −2 / 2 °C | 5 m/s | 1,1 mm (0–3), 50 % | střední | 9 |
+| po 23. 11. | −3 / 1 °C | 7 m/s | 0,8 mm (0–3), 50 % | střední | 8 |
+| út 24. 11. | −4 / 1 °C | 6 m/s | 0,0 mm (0–1), 17 % | nízká | 6 |
+| st 25. 11. | −4 / 1 °C | 10 m/s | 0,0 mm (0–7), 40 % | nízká | 5 |
 
 Kalibrace: teplota podle vlastní stanice, ostatní podle stanice ČHMÚ Černá v Pošumaví.
 
@@ -39,32 +40,33 @@ Kalibrace: teplota podle vlastní stanice, ostatní podle stanice ČHMÚ Černá
 
 | Kdy | Teplota | Vítr / nárazy | Srážky (shoda modelů) | Jistota teploty |
 |---|---|---|---|---|
-| st 00–03 | 6 °C (3 až 9) | 4 / 13 m/s JZ | – | střední |
-| st 03–06 | 6 °C (3 až 9) | 6 / 16 m/s JZ | 3,1 mm (94 %) | střední |
-| st 06–09 | 6 °C (3 až 9) | 7 / 17 m/s JZ | 1,3 mm (59 %) | střední |
-| st 09–12 | 7 °C (5 až 10) | 7 / 17 m/s Z | 0,6 mm (35 %) | vysoká |
-| st 12–15 | 7 °C (4 až 10) | 7 / 17 m/s Z | 1,3 mm (71 %) | střední |
-| st 15–18 | 6 °C (4 až 9) | 6 / 16 m/s Z | 0,5 mm (53 %) | vysoká |
-| st 18–21 | 5 °C (2 až 8) | 7 / 16 m/s Z | 0,5 mm (53 %) | vysoká |
-| st 21–00 | 5 °C (2 až 8) | 6 / 16 m/s Z | 0,2 mm (29 %) | střední |
-| čt 00–03 | 4 °C (1 až 7) | 5 / 13 m/s Z | – | střední |
-| čt 03–06 | 3 °C (0 až 6) | 3 / 10 m/s JZ | – | střední |
-| čt 06–09 | 3 °C (0 až 6) | 2 / 4 m/s J | – | vysoká |
-| čt 09–12 | 7 °C (4 až 10) | 2 / 5 m/s J | – | vysoká |
-| čt 12–15 | 6 °C (3 až 9) | 4 / 11 m/s JZ | 1,5 mm (75 %) | střední |
-| čt 15–18 | 5 °C (3 až 8) | 5 / 14 m/s Z | 0,9 mm (88 %) | vysoká |
-| čt 18–21 | 4 °C (1 až 7) | 6 / 15 m/s Z | 0,6 mm (73 %) | vysoká |
-| čt 21–00 | 4 °C (1 až 7) | 7 / 16 m/s Z | 0,6 mm (71 %) | střední |
+| st 08–11 | 7 °C (4 až 10) | 7 / 18 m/s Z | 0,9 mm (53 %) | vysoká |
+| st 11–14 | 8 °C (5 až 11) | 7 / 17 m/s Z | 0,4 mm (53 %) | střední |
+| st 14–17 | 7 °C (4 až 10) | 7 / 16 m/s Z | 0,6 mm (47 %) | vysoká |
+| st 17–20 | 6 °C (3 až 8) | 7 / 16 m/s Z | 0,9 mm (53 %) | vysoká |
+| st 20–23 | 5 °C (2 až 8) | 7 / 16 m/s Z | 0,7 mm (59 %) | vysoká |
+| st 23–02 | 4 °C (1 až 7) | 6 / 14 m/s Z | – | střední |
+| čt 02–05 | 4 °C (1 až 7) | 4 / 12 m/s Z | – | střední |
+| čt 05–08 | 3 °C (0 až 6) | 2 / 7 m/s J | – | vysoká |
+| čt 08–11 | 6 °C (3 až 8) | 2 / 5 m/s J | – | vysoká |
+| čt 11–14 | 7 °C (4 až 10) | 2 / 8 m/s JZ | 0,4 mm (59 %) | střední |
+| čt 14–17 | 5 °C (2 až 8) | 5 / 12 m/s Z | 1,4 mm (100 %) | střední |
+| čt 17–20 | 4 °C (2 až 7) | 6 / 14 m/s Z | 0,5 mm (62 %) | vysoká |
+| čt 20–23 | 4 °C (1 až 7) | 6 / 14 m/s Z | 0,6 mm (69 %) | vysoká |
+| čt 23–02 | 4 °C (1 až 7) | 6 / 14 m/s Z | 1,2 mm (81 %) | střední |
+| pá 02–05 | 4 °C (1 až 7) | 7 / 17 m/s Z | 1,4 mm (94 %) | střední |
+| pá 05–08 | 4 °C (1 až 7) | 7 / 16 m/s Z | 1,1 mm (93 %) | vysoká |
 
 | Den | Min / max | Max. náraz | Srážky: medián (rozpětí), pravděp. ≥ 1 mm | Shoda modelů | Modelů |
 |---|---|---|---|---|---|
-| st 18. 11. | 5 / 8 °C | 17 m/s | 6,5 mm (2–15), 94 % | střední | 17 |
-| čt 19. 11. | 3 / 7 °C | 16 m/s | 3,2 mm (1–6), 100 % | vysoká | 17 |
-| pá 20. 11. | 3 / 6 °C | 16 m/s | 9,0 mm (3–18), 100 % | vysoká | 14 |
-| so 21. 11. | −1 / 4 °C | 13 m/s | 7,2 mm (4–12), 89 % | střední | 9 |
-| ne 22. 11. | −3 / 3 °C | 8 m/s | 0,0 mm (0–6), 25 % | střední | 8 |
-| po 23. 11. | −2 / 2 °C | 9 m/s | 1,6 mm (0–14), 50 % | nízká | 6 |
-| út 24. 11. | −2 / 3 °C | 6 m/s | 0,8 mm (0–4), 50 % | střední | 6 |
+| st 18. 11. | 5 / 8 °C | 18 m/s | 4,6 mm (0–12), 76 % | vysoká | 17 |
+| čt 19. 11. | 3 / 7 °C | 14 m/s | 2,6 mm (1–5), 88 % | vysoká | 17 |
+| pá 20. 11. | 3 / 6 °C | 17 m/s | 7,7 mm (5–15), 100 % | vysoká | 16 |
+| so 21. 11. | −1 / 4 °C | 13 m/s | 7,3 mm (3–9), 100 % | střední | 11 |
+| ne 22. 11. | −3 / 3 °C | 6 m/s | 0,9 mm (0–3), 50 % | střední | 9 |
+| po 23. 11. | −3 / 1 °C | 8 m/s | 1,1 mm (0–2), 50 % | střední | 8 |
+| út 24. 11. | −5 / 2 °C | 7 m/s | 0,0 mm (0–1), 17 % | nízká | 6 |
+| st 25. 11. | −5 / 2 °C | 10 m/s | 0,0 mm (0–6), 40 % | nízká | 5 |
 
 Kalibrace: teplota podle vlastní stanice, ostatní podle stanice ČHMÚ Černá v Pošumaví.
 
