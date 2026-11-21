@@ -14,11 +14,12 @@ on:
       start:
         description: "Zacatek zpetneho vyhodnoceni (RRRR-MM-DD)"
         default: "2025-10-01"
-  # GitHub planovane behy obcas vynecha, proto kontrola kazdou hodinu:
-  # predpoved se spocita, jen kdyz od posledniho terminu (4:15, 10:15, 16:15, 22:15
-  # mistniho casu) jeste zadna nevznikla. Ostatni kontroly skonci za par sekund.
+  # Hlavni spousteni: cron-job.org vola workflow_dispatch ve 4:15, 10:15, 16:15
+  # a 22:15 mistniho casu. Planovane behy GitHubu jsou jen pojistka (casto se
+  # zpozdi nebo vynechaji): kontrola spocita predpoved, jen kdyz od posledniho
+  # terminu zadna nevznikla. Ostatni kontroly skonci za par sekund.
   schedule:
-    - cron: "25 * * * *"
+    - cron: "55 * * * *"
 
 permissions:
   contents: write
@@ -109,5 +110,13 @@ jobs:
         with:
           path: docs
       - name: Zverejnit stranku
+        id: zverejnit
         if: always() && hashFiles('docs/index.html') != ''
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+      - name: Pockat pred druhym pokusem
+        if: always() && steps.zverejnit.outcome == 'failure'
+        run: sleep 60
+      - name: Zverejnit stranku (druhy pokus)
+        if: always() && steps.zverejnit.outcome == 'failure'
         uses: actions/deploy-pages@v4
